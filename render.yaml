@@ -1,0 +1,24 @@
+# Render.com — Blueprint. Nota: escolher região "Frankfurt" ou "Singapore" só se as APIs não estiverem
+# bloqueadas nessa região; as regiões dos EUA (Oregon/Ohio/Virginia) são bloqueadas pela Binance e Bybit.
+services:
+  - type: web
+    name: bybit-binance-arb
+    runtime: docker
+    plan: starter
+    region: frankfurt
+    healthCheckPath: /health
+    disk:
+      name: arb-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /app/data
+      - key: KILL_SWITCH_FILE
+        value: /app/data/STOP
+      - key: PORT
+        value: "8080"
+      - key: WEB_TOKEN
+        generateValue: true
+      - key: LIVE
+        value: "false"

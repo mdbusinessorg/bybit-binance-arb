@@ -7,6 +7,7 @@ import { state, save } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 import { notify } from './notify.js';
 import { usd } from './math.js';
+import { startWebServer } from './server.js';
 
 const log = createLogger('main');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -60,6 +61,7 @@ async function reporter() {
 
 async function main() {
   banner();
+  startWebServer();
   if (config.live) {
     validateForLive();
     log.warn('MODO LIVE: o robô vai colocar ordens reais. Ctrl+C para cancelar nos próximos 5s...');

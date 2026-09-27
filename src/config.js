@@ -103,6 +103,11 @@ export const config = {
     chatId: process.env.TELEGRAM_CHAT_ID || '',
     reportEveryMin: num('TELEGRAM_REPORT_EVERY_MIN', 60),
   },
+
+  web: {
+    port: num('PORT', 0),
+    token: process.env.WEB_TOKEN || '',
+  },
 };
 
 export function modeLabel() {

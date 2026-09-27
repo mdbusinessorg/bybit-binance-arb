@@ -100,12 +100,52 @@ real das exchanges antes de aumentar.
 - `DEMO_TRADING=true` liga às contas demo das duas exchanges para testar execução real sem dinheiro
   (precisa de chaves criadas nas contas demo).
 
-## Restrições regionais (importante)
+## Correr na nuvem (24/7, sem depender do teu PC)
+
+O robô é um processo único com um **painel web** embutido (`PORT`), por isso corre em qualquer host de
+containers. Ficheiros incluídos:
+
+| Ficheiro | Para |
+|---|---|
+| `Dockerfile` | qualquer plataforma Docker |
+| `fly.toml` | [Fly.io](https://fly.io) — permite escolher a **região** (importante, ver abaixo); volume persistente para `data/` |
+| `render.yaml` | [Render](https://render.com) — Blueprint com disco persistente |
+| `docker-compose.yml` | VPS próprio (Hetzner, Contabo, DigitalOcean…) |
+
+### Fly.io (recomendado — controlo da região)
+
+```bash
+# instalar: https://fly.io/docs/flyctl/install/
+fly auth login
+fly launch --no-deploy --copy-config --name bybit-binance-arb --region jnb   # ou gru
+fly volumes create arb_data --region jnb --size 1
+fly secrets set WEB_TOKEN=um-segredo-longo
+# (mais tarde, para live) fly secrets set BYBIT_API_KEY=... BYBIT_API_SECRET=... BINANCE_API_KEY=... BINANCE_API_SECRET=... LIVE=true
+fly deploy
+fly logs          # deve mostrar "mercados carregados" para Bybit e Binance
+fly open          # painel: https://bybit-binance-arb.fly.dev/?token=um-segredo-longo
+```
+
+Sem chaves e sem `LIVE=true` a instância corre em **dry-run com dados reais** — é exatamente o que queres para
+os primeiros dias: ver quantas oportunidades reais aparecem e qual seria o P&L, sem risco.
+
+### Painel web
+
+- `/` — P&L de hoje/total, trades, posições funding, circuit breaker; auto-refresh 15 s.
+- `/?token=WEB_TOKEN` — o mesmo, com botões **Parar (kill switch)** e **Retomar**.
+- `/api/status` — JSON; `/health` — para health checks da plataforma.
+
+O ficheiro kill switch e o estado vivem em `DATA_DIR` (`/app/data` no container) — monta um volume persistente
+senão perdes o histórico a cada redeploy (os `fly.toml`/`render.yaml`/`docker-compose.yml` já o fazem).
+
+### Restrições regionais (importante)
 
 Ambas as exchanges bloqueiam pedidos API de certos países (Binance devolve `451`, Bybit `403` via CloudFront).
-Se `npm run scan` falhar com esses códigos, o robô tem de correr numa **máquina/VPS numa região permitida**
-(as APIs de trading das exchanges não têm alternativa). Confirma também os Termos de Serviço para o teu país —
-o robô não tenta contornar bloqueios.
+O robô deteta isso no arranque e termina com a mensagem `API bloqueada para a região deste servidor` — nesse caso
+**muda a região do deploy**. Regiões conhecidas por serem bloqueadas por pelo menos uma das duas: EUA, Reino
+Unido, Canadá, Países Baixos, Singapura, Hong Kong. Boas candidatas: **Joanesburgo (`jnb`)**, **São Paulo
+(`gru`)**; confirma sempre com `fly logs` após o primeiro deploy. Confirma também os Termos de Serviço das
+exchanges para o teu país — o robô não tenta contornar bloqueios.
 
 ## Alertas Telegram (opcional)
 
@@ -120,6 +160,7 @@ src/
   index.js            arranque, loops das estratégias, sinais
   scanner.js          tabela de oportunidades (CLI)
   status.js           estado/P&L/posições (CLI)
+  server.js           painel web + /health + /api/status + parar/retomar
   config.js           todas as opções (.env)
   exchanges.js        ccxt Bybit/Binance ou mocks; símbolos comuns
   math.js             VWAP, lucro líquido spot, funding normalizado, APR, break-even

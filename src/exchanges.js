@@ -50,7 +50,17 @@ export async function createExchanges() {
     EXCHANGE_IDS.map(async (id) => {
       const ex = result[id];
       const t0 = Date.now();
-      await ex.loadMarkets();
+      try {
+        await ex.loadMarkets();
+      } catch (e) {
+        if (/451|403|CloudFront|Unavailable For Legal Reasons|restricted location/i.test(e.message)) {
+          throw new Error(
+            `${ex.label}: API bloqueada para a região deste servidor (${e.message.slice(0, 120)}...). ` +
+              'O robô tem de correr numa região onde a exchange opera — muda a região do deploy (ver README).',
+          );
+        }
+        throw e;
+      }
       const spot = Object.values(ex.markets).filter((m) => m.spot && m.active !== false).length;
       const swap = Object.values(ex.markets).filter((m) => m.swap && m.linear && m.active !== false).length;
       log.info(`${ex.label}: mercados carregados (${spot} spot, ${swap} perp lineares) em ${Date.now() - t0}ms`);

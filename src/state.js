@@ -76,3 +76,12 @@ export function resetState() {
   state = defaults();
   save();
 }
+
+export function recentTrades(limit = 50) {
+  try {
+    const lines = fs.readFileSync(tradesFile, 'utf8').trim().split('\n').filter(Boolean);
+    return lines.slice(-limit).map((l) => JSON.parse(l));
+  } catch {
+    return [];
+  }
+}
