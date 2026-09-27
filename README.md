@@ -109,7 +109,7 @@ containers. Ficheiros incluídos:
 |---|---|
 | `Dockerfile` | qualquer plataforma Docker |
 | `fly.toml` | [Fly.io](https://fly.io) — permite escolher a **região** (importante, ver abaixo); volume persistente para `data/` |
-| `render.yaml` | [Render](https://render.com) — Blueprint com disco persistente |
+| `render.yaml` | [Render](https://render.com) — Blueprint com disco persistente (região `frankfurt`, testada OK) |
 | `docker-compose.yml` | VPS próprio (Hetzner, Contabo, DigitalOcean…) |
 
 ### Fly.io (recomendado — controlo da região)
@@ -117,8 +117,8 @@ containers. Ficheiros incluídos:
 ```bash
 # instalar: https://fly.io/docs/flyctl/install/
 fly auth login
-fly launch --no-deploy --copy-config --name bybit-binance-arb --region jnb   # ou gru
-fly volumes create arb_data --region jnb --size 1
+fly launch --no-deploy --copy-config --name bybit-binance-arb --region nrt   # ou fra/cdg/gru/syd
+fly volumes create arb_data --region nrt --size 1
 fly secrets set WEB_TOKEN=um-segredo-longo
 # (mais tarde, para live) fly secrets set BYBIT_API_KEY=... BYBIT_API_SECRET=... BINANCE_API_KEY=... BINANCE_API_SECRET=... LIVE=true
 fly deploy
@@ -143,8 +143,10 @@ senão perdes o histórico a cada redeploy (os `fly.toml`/`render.yaml`/`docker-
 Ambas as exchanges bloqueiam pedidos API de certos países (Binance devolve `451`, Bybit `403` via CloudFront).
 O robô deteta isso no arranque e termina com a mensagem `API bloqueada para a região deste servidor` — nesse caso
 **muda a região do deploy**. Regiões conhecidas por serem bloqueadas por pelo menos uma das duas: EUA, Reino
-Unido, Canadá, Países Baixos, Singapura, Hong Kong. Boas candidatas: **Joanesburgo (`jnb`)**, **São Paulo
-(`gru`)**; confirma sempre com `fly logs` após o primeiro deploy. Confirma também os Termos de Serviço das
+Unido, Canadá, Países Baixos, Singapura, Hong Kong. Teste real feito em 2026-09 a partir de máquinas Fly.io
+(GET público às duas APIs): **OK** `nrt` (Tóquio), `fra`, `cdg`, `gru`, `syd` · **bloqueado** `jnb` (Bybit 403),
+`arn` (ambas). O deploy usa `nrt` por ser a mais próxima dos matching engines; confirma sempre com `fly logs`
+após o primeiro deploy. Confirma também os Termos de Serviço das
 exchanges para o teu país — o robô não tenta contornar bloqueios.
 
 ## Alertas Telegram (opcional)

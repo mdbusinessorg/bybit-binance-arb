@@ -1,9 +1,11 @@
 # Fly.io — https://fly.io/docs
-# Região: escolher uma onde as APIs da Bybit e da Binance não estão bloqueadas
-# (ex.: jnb = Joanesburgo, gru = São Paulo). Evitar EUA (iad, lax...), Reino Unido (lhr), Países Baixos (ams), Singapura (sin).
+# Região: escolher uma onde as APIs da Bybit e da Binance não estão bloqueadas.
+# Testado em 2026-09 (GET público às duas APIs): OK = nrt, fra, cdg, gru, syd | BLOQUEADO = jnb, arn.
+# Evitar também EUA (iad, lax...), Reino Unido (lhr), Países Baixos (ams), Singapura (sin).
+# nrt (Tóquio) fica mais perto dos matching engines (Binance: Tóquio, Bybit: Singapura).
 # Depois de deploy: `fly logs` deve mostrar "mercados carregados" e NÃO erros 451/403.
 app = "bybit-binance-arb"
-primary_region = "jnb"
+primary_region = "nrt"
 
 [build]
 
