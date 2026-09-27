@@ -1,0 +1,36 @@
+# Fly.io — https://fly.io/docs
+# Região: escolher uma onde as APIs da Bybit e da Binance não estão bloqueadas
+# (ex.: jnb = Joanesburgo, gru = São Paulo). Evitar EUA (iad, lax...), Reino Unido (lhr), Países Baixos (ams), Singapura (sin).
+# Depois de deploy: `fly logs` deve mostrar "mercados carregados" e NÃO erros 451/403.
+app = "bybit-binance-arb"
+primary_region = "jnb"
+
+[build]
+
+[env]
+  DATA_DIR = "/app/data"
+  KILL_SWITCH_FILE = "/app/data/STOP"
+  PORT = "8080"
+  LOG_LEVEL = "info"
+
+[mounts]
+  source = "arb_data"
+  destination = "/app/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

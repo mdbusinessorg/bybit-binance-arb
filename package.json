@@ -1,0 +1,31 @@
+{
+  "name": "bybit-binance-arb",
+  "version": "1.0.0",
+  "description": "Robô de arbitragem Bybit <-> Binance (spot cross-exchange + funding-rate) com gestão de risco e dry-run",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "scan": "node src/scanner.js",
+    "start": "node src/index.js",
+    "live": "node src/index.js --live",
+    "sim": "node src/index.js --sim",
+    "status": "node src/status.js",
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "arbitrage",
+    "bybit",
+    "binance",
+    "ccxt",
+    "funding-rate",
+    "trading-bot"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ccxt": "^4.5.83",
+    "dotenv": "^17.2.3"
+  }
+}

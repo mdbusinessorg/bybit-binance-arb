@@ -1,0 +1,23 @@
+# Para um VPS qualquer (Hetzner, Contabo, DigitalOcean...):
+#   cp .env.example .env && editar .env
+#   docker compose up -d --build
+#   painel: http://IP-DO-SERVIDOR:8080/?token=<WEB_TOKEN>
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      KILL_SWITCH_FILE: /app/data/STOP
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - arb_data:/app/data
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+volumes:
+  arb_data:
