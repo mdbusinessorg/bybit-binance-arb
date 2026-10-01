@@ -11,7 +11,7 @@ const BASE_PRICES = {
 };
 
 // estado partilhado entre as duas mocks para que os preços tenham a mesma referência
-const shared = { mid: { ...BASE_PRICES }, tick: 0 };
+const shared = { mid: { ...BASE_PRICES }, tick: 0, nextFunding: {} };
 
 function rnd(a, b) {
   return a + Math.random() * (b - a);
@@ -32,7 +32,7 @@ export function createMockExchange(id, feeCfg) {
   const balances = { USDT: { free: 1000, used: 0, total: 1000 } };
   for (const base of Object.keys(BASE_PRICES)) {
     bias[base] = 0;
-    funding[base] = rnd(-0.0002, 0.0004);
+    funding[base] = ['SOL', 'DOGE', 'WIF', 'PEPE'].includes(base) ? rnd(0.0003, 0.0012) : rnd(-0.0002, 0.0004);
     balances[base] = { free: 200 / BASE_PRICES[base], used: 0, total: 200 / BASE_PRICES[base] };
   }
   const positions = {};
@@ -44,11 +44,13 @@ export function createMockExchange(id, feeCfg) {
     const p = precisionFor(BASE_PRICES[base]);
     markets[`${base}/USDT`] = {
       id: `${base}USDT`, symbol: `${base}/USDT`, base, quote: 'USDT', spot: true, swap: false, active: true,
-      precision: p, limits: { amount: { min: 0 }, cost: { min: 5 } },
+      precision: p, limits: { amount: { min: 0 }, cost: { min: 5 } }, created: Date.now() - 400 * 86_400_000, info: {},
     };
     markets[`${base}/USDT:USDT`] = {
       id: `${base}USDT`, symbol: `${base}/USDT:USDT`, base, quote: 'USDT', settle: 'USDT', spot: false, swap: true,
       linear: true, active: true, contractSize: 1, precision: p, limits: { amount: { min: 0 }, cost: { min: 5 } },
+      settle: 'USDT', created: Date.now() - (base === 'SEI' ? 3 : 400) * 86_400_000,
+      info: { fundingInterval: ['SUI', 'SEI', 'WIF'].includes(base) && id === 'bybit' ? '240' : '480', deliveryTime: base === 'TIA' ? String(Date.now() + 5 * 86_400_000) : '0' },
     };
   }
 
@@ -128,7 +130,7 @@ export function createMockExchange(id, feeCfg) {
       for (const s of list) {
         const m = markets[s];
         const px = mid(m.base);
-        out[s] = { symbol: s, last: px, bid: px * 0.9998, ask: px * 1.0002, quoteVolume: rnd(2e6, 5e8), timestamp: Date.now() };
+        out[s] = { symbol: s, last: px, bid: px * 0.9998, ask: px * 1.0002, quoteVolume: rnd(2e6, 5e8), timestamp: Date.now(), info: m.swap && id === 'bybit' ? { openInterestValue: String(rnd(5e6, 5e8)) } : {} };
       }
       return out;
     },
@@ -144,7 +146,8 @@ export function createMockExchange(id, feeCfg) {
           markPrice: mid(m.base),
           indexPrice: shared.mid[m.base],
           interval,
-          fundingTimestamp: Date.now() + 3600_000,
+          // settlement sintético: cada símbolo tem o seu próximo settlement entre 5 e 120 min
+          fundingTimestamp: shared.nextFunding[m.base] || (shared.nextFunding[m.base] = Date.now() + rnd(5, 120) * 60_000),
           timestamp: Date.now(),
         };
       }
@@ -251,6 +254,20 @@ export function createMockExchange(id, feeCfg) {
     },
     async fetchFundingHistory() {
       return [];
+    },
+    async fetchFundingRateHistory(symbol, since = Date.now() - 86_400_000) {
+      const m = markets[symbol];
+      const hours = ['SUI', 'SEI', 'WIF'].includes(m.base) && id === 'bybit' ? 4 : 8;
+      const out = [];
+      for (let t = since; t < Date.now(); t += hours * 3600_000) {
+        out.push({ symbol, fundingRate: funding[m.base] * (hours / 8) * rnd(0.7, 1.3), timestamp: t });
+      }
+      return out;
+    },
+    async fetchOpenInterest(symbol) {
+      const m = markets[symbol];
+      const value = m.base === 'WIF' ? 500_000 : rnd(5e6, 5e8);
+      return { symbol, openInterestAmount: value / mid(m.base), openInterestValue: id === 'bybit' ? value : undefined };
     },
   };
   return ex;

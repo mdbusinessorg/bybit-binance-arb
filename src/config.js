@@ -31,6 +31,8 @@ export const config = {
   demo: bool('DEMO_TRADING', false),
   logLevel: process.env.LOG_LEVEL || 'info',
   dataDir: process.env.DATA_DIR || './data',
+  // exchanges ativas: 'bybit,binance' (arbitragem cross-exchange) ou só 'bybit' (cash-and-carry)
+  exchanges: list('EXCHANGES', ['bybit', 'binance']).map((s) => s.toLowerCase()).filter((s) => ['bybit', 'binance'].includes(s)),
 
   bybit: {
     apiKey: process.env.BYBIT_API_KEY || '',
@@ -87,6 +89,47 @@ export const config = {
     useMakerEntry: bool('FUNDING_USE_MAKER_ENTRY', false),
     minVolume24hUsd: num('FUNDING_MIN_VOLUME_24H_USD', 5_000_000),
     marginAlertRatio: num('FUNDING_MARGIN_ALERT_RATIO', 0.5),
+    // só abrir quando o próximo settlement da perna que recebe está a <= N min (0 = sempre)
+    entryWindowMin: num('FUNDING_ENTRY_WINDOW_MIN', 45),
+    // não fechar por "spread desapareceu" antes disto (evita pagar 4 taxas por uma oscilação)
+    minHoldHours: num('FUNDING_MIN_HOLD_HOURS', 8),
+    // stop-loss nas pernas: fechar se o P&L de preço (basis) cair abaixo de -X% do notional
+    maxLegLossPct: num('FUNDING_MAX_LEG_LOSS_PCT', 0.6) / 100,
+  },
+
+  // ---------- Estratégia 3: cash-and-carry numa só exchange (spot long + perp short) ----------
+  carry: {
+    enabled: bool('CARRY_ENABLED', true),
+    exchange: (process.env.CARRY_EXCHANGE || 'bybit').toLowerCase(),
+    symbols: list('CARRY_SYMBOLS', []),
+    positionUsd: num('CARRY_POSITION_USD', 50),
+    leverage: num('CARRY_LEVERAGE', 2),
+    minRate8hPct: num('CARRY_MIN_RATE_8H_PCT', 0.01) / 100,
+    minNetAprPct: num('CARRY_MIN_NET_APR_PCT', 12) / 100,
+    exitRate8hPct: num('CARRY_EXIT_RATE_8H_PCT', 0.002) / 100,
+    exitConfirmations: num('CARRY_EXIT_CONFIRMATIONS', 3),
+    minHoldHours: num('CARRY_MIN_HOLD_HOURS', 8),
+    maxHoldHours: num('CARRY_MAX_HOLD_HOURS', 168),
+    expectedHoldHours: num('CARRY_EXPECTED_HOLD_HOURS', 48),
+    maxBasisCostPct: num('CARRY_MAX_BASIS_COST_PCT', 0.1) / 100,
+    maxLegLossPct: num('CARRY_MAX_LEG_LOSS_PCT', 0.6) / 100,
+    maxOpenPositions: num('CARRY_MAX_OPEN_POSITIONS', 3),
+    pollMs: num('CARRY_POLL_MS', 60_000),
+    entryWindowMin: num('CARRY_ENTRY_WINDOW_MIN', 45),
+    topN: num('CARRY_TOP_N', 8),
+  },
+
+  // ---------- Filtros de qualidade (funding + carry): o que separa carry real de ruído ----------
+  quality: {
+    minVolume24hUsd: num('QUALITY_MIN_VOLUME_24H_USD', 5_000_000),
+    minOpenInterestUsd: num('QUALITY_MIN_OPEN_INTEREST_USD', 2_000_000),
+    maxPositionOiRatio: num('QUALITY_MAX_POSITION_OI_RATIO', 0.001),
+    minListingDays: num('QUALITY_MIN_LISTING_DAYS', 14),
+    persistenceHours: num('QUALITY_PERSISTENCE_HOURS', 24),
+    minHistoryPeriods: num('QUALITY_MIN_HISTORY_PERIODS', 3),
+    requireHistory: bool('QUALITY_REQUIRE_HISTORY', true),
+    maxSignFlips: num('QUALITY_MAX_SIGN_FLIPS', 1),
+    blacklist: list('QUALITY_BLACKLIST', []),
   },
 
   risk: {
@@ -117,9 +160,11 @@ export function modeLabel() {
 }
 
 export function validateForLive() {
+  if (!config.exchanges.length) throw new Error('EXCHANGES vazio — configura bybit e/ou binance');
   const missing = [];
-  if (!config.bybit.apiKey || !config.bybit.secret) missing.push('BYBIT_API_KEY/BYBIT_API_SECRET');
-  if (!config.binance.apiKey || !config.binance.secret) missing.push('BINANCE_API_KEY/BINANCE_API_SECRET');
+  for (const id of config.exchanges) {
+    if (!config[id].apiKey || !config[id].secret) missing.push(`${id.toUpperCase()}_API_KEY/${id.toUpperCase()}_API_SECRET`);
+  }
   if (missing.length) {
     throw new Error(`Modo LIVE requer chaves API em falta: ${missing.join(', ')}`);
   }

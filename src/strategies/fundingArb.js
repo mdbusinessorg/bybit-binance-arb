@@ -1,6 +1,8 @@
 import { config } from '../config.js';
 import { createLogger } from '../logger.js';
-import { evaluateFundingArb, normalizeFundingTo8h, pct, usd } from '../math.js';
+import { evaluateFundingArb, normalizeFundingTo8h, minutesTo, pct, usd } from '../math.js';
+import { marketHealthIssue, FundingHistoryCache, OpenInterestCache, qualityIssue } from '../filters.js';
+import { setCandidates, recordBest } from '../stats.js';
 import { openFundingPosition, closeFundingPosition } from '../executor.js';
 import { state, save, recordTrade } from '../state.js';
 import { tradingBlockedReason, canOpenNotional } from '../risk.js';
@@ -27,10 +29,25 @@ export function fundingIntervalHours(fr, market) {
 export class FundingArbStrategy {
   constructor(exs) {
     this.exs = exs;
-    this.symbols = commonSwapSymbols(exs, config.funding.symbols);
+    const all = commonSwapSymbols(exs, config.funding.symbols);
+    const excluded = [];
+    this.symbols = all.filter((s) => {
+      for (const id of EXCHANGE_IDS) {
+        const issue = marketHealthIssue(exs[id].markets[s]);
+        if (issue) {
+          excluded.push(`${s.split(':')[0]} (${exs[id].label}: ${issue})`);
+          return false;
+        }
+      }
+      return true;
+    });
+    this.history = new FundingHistoryCache();
+    this.oi = new OpenInterestCache();
+    this.tickers = { bybit: {}, binance: {} };
     this.exitCounters = {};
     this.lastAccrualAt = {};
-    log.info(`perps comuns Bybit/Binance: ${this.symbols.length}${config.funding.symbols.length ? ` (lista configurada)` : ''}`);
+    log.info(`perps comuns Bybit/Binance: ${this.symbols.length}${config.funding.symbols.length ? ` (lista configurada)` : ''}; excluídos por delisting/novos/blacklist: ${excluded.length}`);
+    if (excluded.length) log.debug(`excluídos: ${excluded.join(', ')}`);
     log.info(
       `limiar: spread funding 8h >= ${pct(config.funding.minSpread8hPct, 4)}, APR líquido >= ${pct(config.funding.minNetAprPct, 1)}, ` +
         `tamanho ${usd(config.funding.positionUsd)} por lado, alavancagem ${config.funding.leverage}x, máx ${config.funding.maxOpenPositions} posições`,
@@ -65,6 +82,7 @@ export class FundingArbStrategy {
     try {
       const res = await Promise.all(EXCHANGE_IDS.map((id) => this.exs[id].fetchTickers(this.symbols)));
       const vol = {};
+      EXCHANGE_IDS.forEach((id, i) => (this.tickers[id] = res[i] || {}));
       for (const s of this.symbols) {
         const vals = res.map((r) => Number(r[s]?.quoteVolume || 0));
         vol[s] = Math.min(...vals);
@@ -127,27 +145,59 @@ export class FundingArbStrategy {
     const top = ranked.slice(0, 5).map((e) => `${e.symbol.split(':')[0]} ${pct(e.spread8h, 4)}/8h short ${e.shortId} APR líq ${pct(e.netAprPct, 1)}`);
     log.info(`top spreads: ${top.join(' | ')}`);
 
+    if (ranked[0]) recordBest('funding', ranked[0].symbol, ranked[0].spread8h);
     const open = Object.keys(state.fundingPositions).length;
-    if (open >= config.funding.maxOpenPositions) return;
-
-    for (const ev of ranked) {
-      if (state.fundingPositions[ev.symbol]) continue;
-      if (ev.spread8h < config.funding.minSpread8hPct) break;
-      if (ev.netAprPct < config.funding.minNetAprPct) break;
-      if (Math.abs(ev.basisPct) > config.funding.maxBasisPct) continue;
-      if (ev.volume !== null && ev.volume < config.funding.minVolume24hUsd) continue;
-      if (!canOpenNotional(config.funding.positionUsd * 2)) {
-        log.info(`notional máximo atingido; não abrir ${ev.symbol}`);
-        break;
-      }
+    const seen = [];
+    let opened = 0;
+    for (const ev of ranked.slice(0, 10)) {
+      const row = { symbol: ev.symbol.split(':')[0], spread8h: ev.spread8h, netAprPct: ev.netAprPct, short: ev.shortId, long: ev.longId, basisPct: ev.basisPct, reason: null };
+      seen.push(row);
+      if (state.fundingPositions[ev.symbol]) { row.reason = 'já aberta'; continue; }
+      if (ev.spread8h < config.funding.minSpread8hPct) { row.reason = 'spread abaixo do mínimo'; continue; }
+      if (ev.netAprPct < config.funding.minNetAprPct) { row.reason = 'APR líquido abaixo do mínimo'; continue; }
+      if (Math.abs(ev.basisPct) > config.funding.maxBasisPct) { row.reason = `basis ${pct(ev.basisPct, 3)} acima do máximo`; continue; }
+      if (open + opened >= config.funding.maxOpenPositions) { row.reason = 'máx. posições abertas'; continue; }
+      row.reason = await this.qualityCheck(ev);
+      if (row.reason) continue;
+      if (!canOpenNotional(config.funding.positionUsd * 2)) { row.reason = 'notional máximo atingido'; continue; }
       const blocked = tradingBlockedReason();
-      if (blocked) {
-        log.warn(`oportunidade funding ignorada (${blocked}): ${ev.symbol}`);
-        return;
-      }
-      await this.open(ev);
-      if (Object.keys(state.fundingPositions).length >= config.funding.maxOpenPositions) break;
+      if (blocked) { row.reason = blocked; log.warn(`oportunidade funding ignorada (${blocked}): ${ev.symbol}`); break; }
+      const ok = await this.open(ev);
+      row.reason = ok ? 'ABERTA' : 'abertura falhou';
+      if (ok) opened++;
     }
+    setCandidates('funding', seen);
+    const rejected = seen.filter((r) => r.reason && r.reason !== 'ABERTA').slice(0, 4).map((r) => `${r.symbol}: ${r.reason}`);
+    if (rejected.length) log.debug(`rejeitados: ${rejected.join(' | ')}`);
+  }
+
+  /** Filtros de qualidade (liquidez, open interest, persistência do spread, janela de settlement). */
+  async qualityCheck(ev) {
+    const q = config.quality;
+    const liq = qualityIssue({ oiUsd: null, volumeUsd: ev.volume, positionUsd: config.funding.positionUsd });
+    if (liq) return liq;
+    for (const id of EXCHANGE_IDS) {
+      const ex = this.exs[id];
+      const oiUsd = await this.oi.valueUsd(ex, ev.symbol, ev.rates[id].price, this.tickers[id][ev.symbol]);
+      const issue = qualityIssue({ oiUsd, volumeUsd: null, positionUsd: config.funding.positionUsd });
+      if (issue) return `${ex.label}: ${issue}`;
+    }
+    const [hShort, hLong] = await Promise.all([this.history.summary(this.exs[ev.shortId], ev.symbol), this.history.summary(this.exs[ev.longId], ev.symbol)]);
+    if (!hShort || !hLong || hShort.n < q.minHistoryPeriods || hLong.n < q.minHistoryPeriods) {
+      if (q.requireHistory) return `histórico insuficiente (${hShort?.n ?? 0}/${hLong?.n ?? 0} períodos)`;
+    } else {
+      const meanSpread = hShort.mean8h - hLong.mean8h;
+      if (meanSpread < config.funding.minSpread8hPct) return `spread médio ${q.persistenceHours}h ${pct(meanSpread, 4)} abaixo do mínimo (atual ${pct(ev.spread8h, 4)} é pico)`;
+      if (hShort.flips > q.maxSignFlips || hLong.flips > q.maxSignFlips) return `funding instável (sinal mudou ${hShort.flips}/${hLong.flips}x)`;
+    }
+    if (config.funding.entryWindowMin > 0) {
+      const rs = ev.rates[ev.shortId];
+      const rl = ev.rates[ev.longId];
+      const dominant = Math.abs(rs.rate8h) >= Math.abs(rl.rate8h) ? rs : rl;
+      const mins = minutesTo(dominant.nextFunding);
+      if (mins !== null && mins > config.funding.entryWindowMin) return `à espera da janela de settlement (${Math.round(mins)} min)`;
+    }
+    return null;
   }
 
   async open(ev) {
@@ -156,11 +206,11 @@ export class FundingArbStrategy {
     const px = await this.fillPrices(ev.symbol);
     const longPrice = px[ev.longId].ask;
     const shortPrice = px[ev.shortId].bid;
-    if (!longPrice || !shortPrice) return;
+    if (!longPrice || !shortPrice) return false;
     const realBasis = (longPrice - shortPrice) / shortPrice;
     if (realBasis > config.funding.maxBasisPct) {
       log.info(`${ev.symbol}: basis real ${pct(realBasis, 3)} acima do máximo; ignorar`);
-      return;
+      return false;
     }
     const market = longEx.market(ev.symbol);
     const contractSize = market.contractSize || 1;
@@ -170,7 +220,7 @@ export class FundingArbStrategy {
     const minAmt = Math.max(longEx.market(ev.symbol).limits?.amount?.min || 0, shortEx.market(ev.symbol).limits?.amount?.min || 0);
     if (contracts <= 0 || contracts < minAmt) {
       log.info(`${ev.symbol}: quantidade ${contracts} abaixo do mínimo ${minAmt}`);
-      return;
+      return false;
     }
     const line = `${ev.symbol} long ${longEx.label} @${longPrice} / short ${shortEx.label} @${shortPrice} | spread ${pct(ev.spread8h, 4)}/8h | APR líq ${pct(ev.netAprPct, 1)} | break-even ${ev.breakEvenHours.toFixed(1)}h`;
     log.info(`ABRIR FUNDING: ${line}`);
@@ -178,7 +228,7 @@ export class FundingArbStrategy {
     if (!res.ok) {
       log.error(`${ev.symbol}: abertura falhou — ${res.error}`);
       notify(`⚠️ FUNDING ${ev.symbol}: abertura falhou — ${res.error}`);
-      return;
+      return false;
     }
     const notionalUsd = res.contracts * contractSize * ((res.longPrice + res.shortPrice) / 2) * 2;
     state.fundingPositions[ev.symbol] = {
@@ -201,6 +251,8 @@ export class FundingArbStrategy {
     save();
     const tag = config.live ? '💰' : '🧪';
     notify(`${tag} FUNDING ABERTO ${line}\nTaxas entrada ${usd(res.fees, 3)}`);
+    recordBest('funding', ev.symbol, ev.spread8h, true);
+    return true;
   }
 
   async managePositions(rates) {
@@ -215,6 +267,10 @@ export class FundingArbStrategy {
         const hours = (now - last) / 3600_000;
         pos.fundingAccruedUsd += signedSpread8h * (pos.notionalUsd / 2) * (hours / 8);
         this.lastAccrualAt[pos.symbol] = now;
+        const cs = pos.contractSize || 1;
+        if (a.price && b.price) {
+          pos.legPnlUsd = (a.price - pos.entryLong) * pos.contracts * cs + (pos.entryShort - b.price) * pos.contracts * cs;
+        }
         if (signedSpread8h < config.funding.exitSpread8hPct) {
           this.exitCounters[pos.symbol] = (this.exitCounters[pos.symbol] || 0) + 1;
         } else {
@@ -222,10 +278,11 @@ export class FundingArbStrategy {
         }
       }
       const heldHours = (now - pos.openedAt) / 3600_000;
-      const spreadGone = (this.exitCounters[pos.symbol] || 0) >= config.funding.exitConfirmations;
+      const spreadGone = (this.exitCounters[pos.symbol] || 0) >= config.funding.exitConfirmations && heldHours >= config.funding.minHoldHours;
       const tooLong = heldHours >= config.funding.maxHoldHours;
-      if (spreadGone || tooLong) {
-        await this.close(pos, spreadGone ? 'spread desapareceu' : 'tempo máximo');
+      const legLoss = Number.isFinite(pos.legPnlUsd) && pos.legPnlUsd < -config.funding.maxLegLossPct * pos.notionalUsd;
+      if (legLoss || spreadGone || tooLong) {
+        await this.close(pos, legLoss ? `stop-loss basis (${usd(pos.legPnlUsd, 3)})` : spreadGone ? 'spread desapareceu' : 'tempo máximo');
       } else if (config.live) {
         await this.checkMargin(pos);
       }

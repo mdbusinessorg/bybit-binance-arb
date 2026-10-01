@@ -259,3 +259,103 @@ export async function closeFundingPosition({ longEx, shortEx, symbol, contracts,
     errors,
   };
 }
+
+/**
+ * Cash-and-carry (uma exchange): compra spot a mercado e, só depois de saber a quantidade
+ * executada, abre short perp da mesma quantidade (reduz o risco de ficar com short descoberto).
+ * Se o short falhar, vende o spot de volta.
+ */
+export async function openCarryPosition({ ex, spotSymbol, perpSymbol, amount, prices }) {
+  const spotFee = ex.fees_.spotTaker;
+  const perpFee = ex.fees_.swapTaker;
+  if (!config.live) {
+    const fees = amount * (prices.spot * spotFee + prices.perp * perpFee);
+    return { ok: true, amount, spotPrice: prices.spot, perpPrice: prices.perp, fees, simulated: true };
+  }
+  try {
+    await ex.setLeverage(config.carry.leverage, perpSymbol);
+  } catch (e) {
+    if (!/not modified|110043|leverage/i.test(e.message)) log.warn(`${ex.label} setLeverage: ${e.message}`);
+  }
+  let spotOrder;
+  try {
+    spotOrder = await placeMarket(ex, spotSymbol, 'buy', amount);
+  } catch (e) {
+    recordFailure(e);
+    return { ok: false, error: `compra spot falhou: ${e.message}` };
+  }
+  const bought = spotOrder?.filled || 0;
+  let fees = feeOf(spotOrder, spotFee);
+  if (bought <= 0) {
+    recordFailure(new Error('compra spot não executou'));
+    return { ok: false, error: 'compra spot não executou', fees };
+  }
+  // a taxa spot pode ser cobrada na moeda comprada; o short deve igualar o que realmente temos
+  const feeBase = spotOrder?.fee?.currency && spotOrder.fee.currency !== 'USDT' ? spotOrder.fee.cost || 0 : 0;
+  let shortAmt = Number(ex.amountToPrecision(perpSymbol, bought - feeBase));
+  const perpMin = ex.market(perpSymbol).limits?.amount?.min || 0;
+  if (shortAmt < perpMin) shortAmt = 0;
+  let perpOrder = null;
+  if (shortAmt > 0) {
+    try {
+      perpOrder = await placeMarket(ex, perpSymbol, 'sell', shortAmt);
+    } catch (e) {
+      log.error(`${ex.label} short perp falhou: ${e.message}`);
+    }
+  }
+  const shorted = perpOrder?.filled || 0;
+  fees += feeOf(perpOrder, perpFee);
+  const excess = bought - feeBase - shorted;
+  if (shorted <= 0 || excess > bought * config.spot.legMismatchTolPct) {
+    try {
+      log.warn(`${spotSymbol}: hedge incompleto (spot ${bought}, short ${shorted}) — a vender excesso spot ${excess}`);
+      const u = await placeMarket(ex, spotSymbol, 'sell', Number(ex.amountToPrecision(spotSymbol, excess)));
+      fees += feeOf(u, spotFee);
+    } catch (e) {
+      recordFailure(e);
+      return { ok: false, error: `hedge incompleto e falha a desfazer spot: ${e.message}`, unbalanced: true, bought, shorted, fees };
+    }
+    if (shorted <= 0) {
+      recordFailure(new Error('short perp não executou'));
+      return { ok: false, error: 'short perp não executou (spot desfeito)', fees };
+    }
+  }
+  recordSuccess();
+  return {
+    ok: true,
+    amount: shorted,
+    spotPrice: spotOrder?.average || prices.spot,
+    perpPrice: perpOrder?.average || prices.perp,
+    fees,
+    spotOrderId: spotOrder?.id,
+    perpOrderId: perpOrder?.id,
+  };
+}
+
+/** Fecha cash-and-carry: recompra o perp (reduce-only) e vende o spot, em paralelo. */
+export async function closeCarryPosition({ ex, spotSymbol, perpSymbol, amount, prices }) {
+  if (!config.live) {
+    const fees = amount * (prices.spot * ex.fees_.spotTaker + prices.perp * ex.fees_.swapTaker);
+    return { ok: true, spotPrice: prices.spot, perpPrice: prices.perp, fees, simulated: true };
+  }
+  const [p, sp] = await Promise.allSettled([
+    placeMarket(ex, perpSymbol, 'buy', amount, { reduceOnly: true }),
+    placeMarket(ex, spotSymbol, 'sell', amount),
+  ]);
+  const perpOrder = p.status === 'fulfilled' ? p.value : null;
+  const spotOrder = sp.status === 'fulfilled' ? sp.value : null;
+  const errors = [p, sp].filter((r) => r.status === 'rejected').map((r) => r.reason?.message);
+  if (errors.length) {
+    recordFailure(new Error(errors.join(' | ')));
+    log.error(`${spotSymbol}: fecho parcial do carry — ${errors.join(' | ')} — VERIFICAR MANUALMENTE`);
+  } else {
+    recordSuccess();
+  }
+  return {
+    ok: errors.length === 0,
+    spotPrice: spotOrder?.average || prices.spot,
+    perpPrice: perpOrder?.average || prices.perp,
+    fees: feeOf(spotOrder, ex.fees_.spotTaker) + feeOf(perpOrder, ex.fees_.swapTaker),
+    errors,
+  };
+}

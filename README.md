@@ -63,8 +63,51 @@ Funding-rate:
   custo escondido que entra no cálculo.
 - **Break-even em horas** = taxas de abrir+fechar ÷ spread de funding. Só abre se o APR líquido para o
   `FUNDING_EXPECTED_HOLD_HOURS` (24h) for ≥ 15 %.
-- Fecha quando o spread desaparece durante 3 verificações seguidas ou ao fim de 72h.
+- Fecha quando o spread desaparece durante 3 verificações seguidas (mínimo 8h abertas) ou ao fim de 72h.
+- Só abre dentro da **janela antes do settlement** (`FUNDING_ENTRY_WINDOW_MIN`, 45 min): entrar logo após um
+  settlement é pagar taxas e esperar 8h pelo primeiro funding — e o rate pode mudar entretanto.
+- Não fecha por "spread desapareceu" antes de `FUNDING_MIN_HOLD_HOURS` (8h) e tem **stop-loss de basis**
+  (`FUNDING_MAX_LEG_LOSS_PCT`, 0,6 % do notional) para o caso de as pernas divergirem.
 - Em live, vigia a margem de cada perna (`FUNDING_MARGIN_ALERT_RATIO`) para evitar liquidação de um lado.
+
+### Filtros de qualidade (funding e cash-and-carry) — o que separa carry real de ruído
+
+A pesquisa sobre o que faz os bots de funding perder dinheiro aponta sempre para os mesmos casos: funding
+extremo em moedas recém-listadas ou em delisting, pares sem profundidade, e rates que mudam de sinal. Por
+isso **um snapshot alto nunca chega**; cada candidato tem de passar:
+
+| Filtro | Variável | Default | Porquê |
+|---|---|---|---|
+| Mercado saudável | — | sempre | exclui perps com `deliveryTime`/expiry (delisting agendado), estado ≠ TRADING, inativos |
+| Idade da listagem | `QUALITY_MIN_LISTING_DAYS` | 14 d | o funding de lançamento é extremo e desaparece em dias |
+| Volume 24h | `QUALITY_MIN_VOLUME_24H_USD` | $5 M | sem volume não há saída ao preço que se vê |
+| Open interest | `QUALITY_MIN_OPEN_INTEREST_USD` | $2 M | OI baixo = funding manipulável e risco de ADL |
+| Tamanho vs OI | `QUALITY_MAX_POSITION_OI_RATIO` | 0,1 % | a nossa posição não pode mover o mercado |
+| Persistência | `QUALITY_PERSISTENCE_HOURS` / `QUALITY_MIN_HISTORY_PERIODS` | 24 h / 3 | a **média** das últimas 24h tem de estar acima do mínimo, não só o valor atual |
+| Estabilidade | `QUALITY_MAX_SIGN_FLIPS` | 1 | funding que oscila de sinal não é carry, é ruído |
+| Blacklist | `QUALITY_BLACKLIST` | — | moedas que não queres tocar |
+
+O painel web mostra, para cada leitura, os candidatos e **porque não abriu** ("à espera da janela de
+settlement", "histórico insuficiente", "open interest 1M < 2M"...), e guarda a melhor oportunidade de cada
+hora em `data/stats.jsonl` para afinares limiares com dados reais em vez de palpites.
+
+### Estratégia 3 — Cash-and-carry numa só exchange (`EXCHANGES=bybit`)
+
+Para quem só tem conta numa exchange: **compra spot + short perp do mesmo tamanho**, posição delta-neutra que
+recebe o funding positivo (longs pagam shorts) a cada settlement. Mesmo cálculo de líquido (4 taxas + basis),
+mesmos filtros de qualidade, mesmo painel e circuit breakers.
+
+- Basis à entrada = (bid do perp − ask do spot) / spot. Se o perp está **acima** do spot ganhamos na
+  convergência (não contamos com isso); se está abaixo é custo e tem limite (`CARRY_MAX_BASIS_COST_PCT`).
+- Em live a ordem é sequencial por desenho: compra spot primeiro e **só com a quantidade realmente executada**
+  abre o short (evita short descoberto); se o short falhar, vende o spot de volta.
+- Sai quando o funding desaparece (`CARRY_EXIT_CONFIRMATIONS` leituras, após `CARRY_MIN_HOLD_HOURS`), por
+  stop-loss de basis, margem a < 15 % da liquidação, perp sem mercado, ou `CARRY_MAX_HOLD_HOURS`.
+- Riscos que **não** desaparecem: funding a virar negativo (pagas), liquidação do short se o preço disparar
+  e a margem não for reforçada (por isso 2x e não mais), delisting, e a exchange em si.
+
+Com `EXCHANGES=bybit` as estratégias cross-exchange ficam desativadas automaticamente e o modo live só exige
+as chaves da Bybit. Com `EXCHANGES=bybit,binance` correm as três.
 
 ## Execução em live — o que acontece quando corre mal
 
@@ -164,9 +207,11 @@ src/
   status.js           estado/P&L/posições (CLI)
   server.js           painel web + /health + /api/status + parar/retomar
   config.js           todas as opções (.env)
-  exchanges.js        ccxt Bybit/Binance ou mocks; símbolos comuns
-  math.js             VWAP, lucro líquido spot, funding normalizado, APR, break-even
-  executor.js         ordens IOC paralelas, reconciliação de pernas, unwind
+  exchanges.js        ccxt Bybit/Binance ou mocks; símbolos comuns; EXCHANGES ativas
+  math.js             VWAP, lucro líquido spot, funding normalizado, APR, break-even, carry
+  filters.js          filtros de qualidade: saúde do mercado, histórico de funding, open interest
+  stats.js            candidatos da última leitura + melhor oportunidade por hora (data/stats.jsonl)
+  executor.js         ordens IOC paralelas, reconciliação de pernas, unwind, carry sequencial
   risk.js             circuit breakers, notional, kill switch
   state.js            persistência (data/state.json, data/trades.jsonl)
   notify.js           Telegram
@@ -174,8 +219,10 @@ src/
   strategies/
     spotArb.js
     fundingArb.js
+    carry.js          cash-and-carry numa só exchange
 test/
   math.test.js
+  filters.test.js
 ```
 
 ## Aviso
