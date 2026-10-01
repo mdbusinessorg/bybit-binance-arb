@@ -147,3 +147,47 @@ export function usd(x, digits = 2) {
   if (x === null || x === undefined || !Number.isFinite(x)) return 'n/a';
   return `${x >= 0 ? '' : '-'}$${Math.abs(x).toFixed(digits)}`;
 }
+
+/**
+ * Resume um histórico de funding (já normalizado a 8h) para avaliar persistência.
+ * rates8h: array de números (mais antigo -> mais recente). Devolve médias, extremos e
+ * quantas vezes o sinal mudou — spreads que oscilam de sinal não são "carry", são ruído.
+ */
+export function summarizeFunding(rates8h) {
+  const xs = (rates8h || []).filter((x) => Number.isFinite(x));
+  if (!xs.length) return { n: 0, mean8h: null, min8h: null, max8h: null, flips: 0, stddev: null };
+  const n = xs.length;
+  const mean8h = xs.reduce((a, b) => a + b, 0) / n;
+  const variance = xs.reduce((a, b) => a + (b - mean8h) ** 2, 0) / n;
+  let flips = 0;
+  for (let i = 1; i < n; i++) if (Math.sign(xs[i]) !== Math.sign(xs[i - 1]) && xs[i] !== 0 && xs[i - 1] !== 0) flips++;
+  return { n, mean8h, min8h: Math.min(...xs), max8h: Math.max(...xs), flips, stddev: Math.sqrt(variance) };
+}
+
+/**
+ * Cash-and-carry numa só exchange: comprar spot (ao ask) + short perp (ao bid), receber funding.
+ * Convenção: funding positivo => longs pagam shorts => recebemos.
+ *
+ * basis = (perpBid - spotAsk) / spotAsk. Se positivo, vendemos o perp mais caro do que compramos o
+ * spot e ganhamos na convergência; por prudência contamos esse ganho a zero e só o basis negativo
+ * (perp mais barato que spot) entra como custo.
+ */
+export function evaluateCarry({ rate8h, spotAsk, perpBid, spotFee, perpFee, expectedHoldHours = 24 }) {
+  const basisPct = (perpBid - spotAsk) / spotAsk;
+  const basisCostPct = Math.max(0, -basisPct);
+  // 4 ordens: comprar spot, abrir short, vender spot, fechar short
+  const roundTripFeesPct = 2 * spotFee + 2 * perpFee;
+  const periods = expectedHoldHours / 8;
+  const grossPct = rate8h * periods;
+  const netPct = grossPct - roundTripFeesPct - basisCostPct;
+  const netAprPct = expectedHoldHours > 0 ? netPct * ((365 * 24) / expectedHoldHours) : 0;
+  const grossAprPct = rate8h * 3 * 365;
+  const breakEvenHours = rate8h > 0 ? ((roundTripFeesPct + basisCostPct) / rate8h) * 8 : Infinity;
+  return { rate8h, basisPct, basisCostPct, roundTripFeesPct, grossPct, netPct, grossAprPct, netAprPct, breakEvenHours };
+}
+
+/** Minutos até ao próximo settlement de funding (null se desconhecido). */
+export function minutesTo(timestampMs, now = Date.now()) {
+  if (!timestampMs || !Number.isFinite(timestampMs)) return null;
+  return (timestampMs - now) / 60_000;
+}

@@ -5,7 +5,14 @@ import { createMockExchange } from './mock.js';
 
 const log = createLogger('exchanges');
 
-export const EXCHANGE_IDS = ['bybit', 'binance'];
+export const SUPPORTED = ['bybit', 'binance'];
+/** Exchanges ativas nesta execução (EXCHANGES=bybit,binance | bybit | binance). */
+export const EXCHANGE_IDS = SUPPORTED.filter((id) => config.exchanges.includes(id));
+
+/** true quando as duas exchanges estão configuradas (estratégias cross-exchange possíveis). */
+export function hasBothExchanges() {
+  return EXCHANGE_IDS.length === 2;
+}
 
 function buildReal(id) {
   const c = config[id];
@@ -91,4 +98,16 @@ export function toSwapSymbol(spotSymbol) {
 
 export function other(id) {
   return id === 'bybit' ? 'binance' : 'bybit';
+}
+
+/** Perps USDT lineares de UMA exchange que também têm mercado spot ativo (para cash-and-carry). */
+export function carrySymbols(ex, wanted = []) {
+  const ok = (s) => {
+    const m = ex.markets[s];
+    if (!m || !m.swap || !m.linear || m.quote !== 'USDT' || m.settle !== 'USDT' || m.active === false) return false;
+    const spot = ex.markets[`${m.base}/USDT`];
+    return Boolean(spot && spot.spot && spot.active !== false);
+  };
+  if (wanted.length) return wanted.map(toSwapSymbol).filter(ok);
+  return Object.keys(ex.markets).filter(ok);
 }

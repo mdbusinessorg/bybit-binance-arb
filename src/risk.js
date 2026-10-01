@@ -26,7 +26,8 @@ export function tradingBlockedReason() {
 }
 
 export function openNotionalUsd() {
-  return Object.values(state.fundingPositions).reduce((acc, p) => acc + (p.notionalUsd || 0), 0);
+  const all = [...Object.values(state.fundingPositions), ...Object.values(state.carryPositions || {})];
+  return all.reduce((acc, p) => acc + (p.notionalUsd || 0), 0);
 }
 
 export function canOpenNotional(extraUsd) {

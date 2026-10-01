@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { config, modeLabel } from './config.js';
 import { createLogger } from './logger.js';
 import { state, save, recentTrades } from './state.js';
+import { candidates, hourlyHistory } from './stats.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 import { usd, pct } from './math.js';
 
@@ -19,10 +20,14 @@ function snapshot() {
     totalPnlUsd: state.totalPnlUsd,
     spotTrades: state.spotTrades,
     fundingTrades: state.fundingTrades,
+    carryTrades: state.carryTrades,
     opportunitiesSeen: state.opportunitiesSeen,
     consecutiveFailures: state.consecutiveFailures,
     openNotionalUsd: openNotionalUsd(),
     fundingPositions: Object.values(state.fundingPositions),
+    carryPositions: Object.values(state.carryPositions),
+    candidates: candidates(),
+    hourly: hourlyHistory(48),
     recentTrades: recentTrades(30).reverse(),
     risk: config.risk,
   };
@@ -51,12 +56,35 @@ function html(s) {
         )
         .join('')
     : '<tr><td colspan="6" class="muted">nenhuma</td></tr>';
+  const carry = s.carryPositions.length
+    ? s.carryPositions
+        .map(
+          (p) =>
+            `<tr><td>${esc(p.symbol)}</td><td>${esc(p.exchange)}</td><td>${usd(p.notionalUsd)}</td>` +
+            `<td>${((Date.now() - p.openedAt) / 3600_000).toFixed(1)}h</td><td>${pct(p.entryRate8h, 4)}/8h</td>` +
+            `<td class="${pnlClass(p.fundingAccruedUsd)}">${usd(p.fundingAccruedUsd, 3)}</td><td class="${pnlClass(p.legPnlUsd)}">${usd(p.legPnlUsd || 0, 3)}</td></tr>`,
+        )
+        .join('')
+    : '<tr><td colspan="7" class="muted">nenhuma</td></tr>';
+  const cand = Object.entries(s.candidates)
+    .flatMap(([strategy, c]) =>
+      c.items.map(
+        (r) =>
+          `<tr><td>${esc(strategy)}</td><td>${esc(r.symbol)}</td><td>${pct(r.spread8h ?? r.rate8h, 4)}/8h</td>` +
+          `<td>${r.netAprPct === null || r.netAprPct === undefined ? '—' : pct(r.netAprPct, 1)}</td><td>${r.basisPct === null || r.basisPct === undefined ? '—' : pct(r.basisPct, 3)}</td>` +
+          `<td class="${r.reason === 'ABERTA' ? 'pos' : 'muted'}">${esc(r.reason || 'ok')}</td></tr>`,
+      ),
+    )
+    .join('') || '<tr><td colspan="6" class="muted">ainda sem leitura</td></tr>';
+  const hourly = s.hourly.length
+    ? s.hourly.slice(-24).reverse().map((h) => `<tr><td>${esc(h.hour)}</td><td>${esc(h.strategy)}</td><td>${esc(h.symbol)}</td><td>${h.best === null ? '—' : pct(h.best, 4)}</td><td>${h.accepted}/${h.seen}</td></tr>`).join('')
+    : '<tr><td colspan="5" class="muted">ainda sem histórico</td></tr>';
   const trades = s.recentTrades.length
     ? s.recentTrades
         .map(
           (t) =>
             `<tr><td>${esc(t.ts?.slice(0, 19).replace('T', ' '))}</td><td>${esc(t.mode)}</td><td>${esc(t.strategy)}</td>` +
-            `<td>${esc(t.symbol)}</td><td>${esc(t.strategy === 'spot' ? `${t.buy}→${t.sell}${t.ok === false ? ' (falhou)' : ''}` : `long ${t.long}/short ${t.short} · ${t.reason} · ${Number(t.heldHours).toFixed(1)}h`)}</td>` +
+            `<td>${esc(t.symbol)}</td><td>${esc(t.strategy === 'spot' ? `${t.buy}→${t.sell}${t.ok === false ? ' (falhou)' : ''}` : t.strategy === 'carry' ? `${t.exchange} · ${t.reason} · ${Number(t.heldHours).toFixed(1)}h` : `long ${t.long}/short ${t.short} · ${t.reason} · ${Number(t.heldHours).toFixed(1)}h`)}</td>` +
             `<td class="${pnlClass(t.pnlUsd)}">${typeof t.pnlUsd === 'number' ? usd(t.pnlUsd, 3) : '—'}</td></tr>`,
         )
         .join('')
@@ -87,6 +115,7 @@ button.danger{background:#b02b2b}
 <div class="card"><div class="k">P&L total</div><div class="v ${pnlClass(s.totalPnlUsd)}">${usd(s.totalPnlUsd, 3)}</div></div>
 <div class="card"><div class="k">Trades spot</div><div class="v">${s.spotTrades}</div></div>
 <div class="card"><div class="k">Trades funding</div><div class="v">${s.fundingTrades}</div></div>
+<div class="card"><div class="k">Trades carry</div><div class="v">${s.carryTrades}</div></div>
 <div class="card"><div class="k">Oportunidades</div><div class="v">${s.opportunitiesSeen}</div></div>
 <div class="card"><div class="k">Notional aberto</div><div class="v">${usd(s.openNotionalUsd)} <span class="muted" style="font-size:12px">/ ${usd(s.risk.maxOpenNotionalUsd)}</span></div></div>
 <div class="card"><div class="k">Perda diária máx</div><div class="v">${usd(s.risk.maxDailyLossUsd)}</div></div>
@@ -94,6 +123,12 @@ button.danger{background:#b02b2b}
 </div>
 <h2>Posições funding abertas</h2>
 <table><tr><th>Par</th><th>Pernas</th><th>Notional</th><th>Aberta há</th><th>Spread entrada</th><th>Funding acumulado</th></tr>${positions}</table>
+<h2>Posições cash-and-carry abertas</h2>
+<table><tr><th>Par</th><th>Exchange</th><th>Notional</th><th>Aberta há</th><th>Funding entrada</th><th>Funding acumulado</th><th>P&L pernas</th></tr>${carry}</table>
+<h2>Candidatos (última leitura) e porquê não abriu</h2>
+<table><tr><th>Estratégia</th><th>Par</th><th>Spread/funding</th><th>APR líq.</th><th>Basis</th><th>Decisão</th></tr>${cand}</table>
+<h2>Melhor oportunidade por hora</h2>
+<table><tr><th>Hora (UTC)</th><th>Estratégia</th><th>Par</th><th>Melhor</th><th>Abertas/vistas</th></tr>${hourly}</table>
 <h2>Últimos trades</h2>
 <table><tr><th>Quando (UTC)</th><th>Modo</th><th>Tipo</th><th>Par</th><th>Detalhe</th><th>P&L</th></tr>${trades}</table>
 <h2>Controlo</h2>${controls}

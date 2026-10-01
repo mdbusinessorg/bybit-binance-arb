@@ -1,8 +1,10 @@
 import { config, modeLabel, validateForLive } from './config.js';
 import { createLogger } from './logger.js';
-import { createExchanges } from './exchanges.js';
+import { createExchanges, hasBothExchanges, EXCHANGE_IDS } from './exchanges.js';
 import { SpotArbStrategy } from './strategies/spotArb.js';
 import { FundingArbStrategy } from './strategies/fundingArb.js';
+import { CarryStrategy } from './strategies/carry.js';
+import { flushAll } from './stats.js';
 import { state, save } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 import { notify } from './notify.js';
@@ -14,8 +16,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function banner() {
   log.info('='.repeat(72));
-  log.info(`Robô de arbitragem Bybit <-> Binance | modo: ${modeLabel()}`);
-  log.info(`estratégias: spot=${config.spot.enabled ? 'on' : 'off'} funding=${config.funding.enabled ? 'on' : 'off'}`);
+  log.info(`Robô de arbitragem | exchanges: ${EXCHANGE_IDS.join(' + ')} | modo: ${modeLabel()}`);
+  log.info(`estratégias: spot=${config.spot.enabled ? 'on' : 'off'} funding=${config.funding.enabled ? 'on' : 'off'} carry=${config.carry.enabled ? `on (${config.carry.exchange})` : 'off'}`);
   log.info(
     `risco: perda diária máx ${usd(config.risk.maxDailyLossUsd)}, notional aberto máx ${usd(config.risk.maxOpenNotionalUsd)}, ` +
       `${config.risk.maxConsecutiveFailures} falhas seguidas param o robô, kill switch: ${config.risk.killSwitchFile}`,
@@ -45,13 +47,14 @@ async function reporter() {
   for (;;) {
     await sleep(every);
     const blocked = tradingBlockedReason();
-    const pos = Object.values(state.fundingPositions)
-      .map((p) => `  • ${p.symbol} long ${p.longId}/short ${p.shortId} ${usd(p.notionalUsd)} funding acumulado ${usd(p.fundingAccruedUsd, 3)}`)
-      .join('\n');
+    const pos = [
+      ...Object.values(state.fundingPositions).map((p) => `  • ${p.symbol} long ${p.longId}/short ${p.shortId} ${usd(p.notionalUsd)} funding acumulado ${usd(p.fundingAccruedUsd, 3)}`),
+      ...Object.values(state.carryPositions).map((p) => `  • CARRY ${p.symbol} (${p.exchange}) ${usd(p.notionalUsd)} funding acumulado ${usd(p.fundingAccruedUsd, 3)}`),
+    ].join('\n');
     notify(
       `📊 Relatório (${modeLabel()})\n` +
         `P&L hoje: ${usd(state.dailyPnlUsd, 3)} | total: ${usd(state.totalPnlUsd, 3)}\n` +
-        `trades spot: ${state.spotTrades} | funding: ${state.fundingTrades} | oportunidades vistas: ${state.opportunitiesSeen}\n` +
+        `trades spot: ${state.spotTrades} | funding: ${state.fundingTrades} | carry: ${state.carryTrades} | oportunidades vistas: ${state.opportunitiesSeen}\n` +
         `notional aberto: ${usd(openNotionalUsd())}\n` +
         (pos ? `posições:\n${pos}\n` : '') +
         (blocked ? `⚠️ bloqueado: ${blocked}` : '✅ a operar'),
@@ -77,15 +80,27 @@ async function main() {
   notify(`🤖 Robô iniciado — ${modeLabel()}`);
 
   const tasks = [];
-  if (config.spot.enabled) {
+  if (!hasBothExchanges()) {
+    log.warn(`só ${EXCHANGE_IDS.join('')} configurada — estratégias cross-exchange (spot, funding) desativadas; só cash-and-carry`);
+  }
+  if (config.spot.enabled && hasBothExchanges()) {
     const spot = new SpotArbStrategy(exs);
     if (spot.symbols.length) tasks.push(loop('spot', () => spot.tick(), config.spot.pollMs));
     else log.warn('spot: nenhum símbolo comum às duas exchanges; estratégia desativada');
   }
-  if (config.funding.enabled) {
+  if (config.funding.enabled && hasBothExchanges()) {
     const funding = new FundingArbStrategy(exs);
     if (funding.symbols.length) tasks.push(loop('funding', () => funding.tick(), config.funding.pollMs));
     else log.warn('funding: nenhum perp comum às duas exchanges; estratégia desativada');
+  }
+  if (config.carry.enabled) {
+    if (!exs[config.carry.exchange]) {
+      log.warn(`carry: exchange ${config.carry.exchange} não está em EXCHANGES; estratégia desativada`);
+    } else {
+      const carry = new CarryStrategy(exs);
+      if (carry.symbols.length) tasks.push(loop('carry', () => carry.tick(), config.carry.pollMs));
+      else log.warn('carry: nenhum perp com spot correspondente; estratégia desativada');
+    }
   }
   if (config.telegram.token) tasks.push(reporter());
   if (!tasks.length) {
@@ -98,7 +113,8 @@ async function main() {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     save();
-    log.info(`${sig} recebido — estado guardado. P&L total ${usd(state.totalPnlUsd, 3)}. Posições funding abertas: ${Object.keys(state.fundingPositions).length}`);
+    flushAll();
+    log.info(`${sig} recebido — estado guardado. P&L total ${usd(state.totalPnlUsd, 3)}. Posições abertas: funding ${Object.keys(state.fundingPositions).length}, carry ${Object.keys(state.carryPositions).length}`);
     process.exit(0);
   });
 }
