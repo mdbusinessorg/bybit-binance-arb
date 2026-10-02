@@ -1,0 +1,19 @@
+# Railway — https://railway.com
+# Build via Dockerfile na raiz. Deploy: Railway dashboard → New Project → Deploy from GitHub repo.
+# Região: escolher uma onde Bybit e Binance não bloqueiam (EUA costuma falhar — preferir Europa/Ásia).
+# Variáveis de ambiente a definir no serviço (ver .env.example):
+#   WEB_TOKEN=<segredo>     — protege STOP BOT e edição de config no painel (/?token=<valor>)
+#   LIVE=false              — PAPER TRADING por defeito; só true quando quiseres capital real
+#   BYBIT_API_KEY/SECRET, BINANCE_API_KEY/SECRET — opcionais (dry-run/paper não precisa)
+#   OKX_/KUCOIN_ idem + *_API_PASSWORD se adicionares essas venues ao EXCHANGES
+#   EXCHANGES=bybit,binance — ajustar se adicionares okx/kucoin
+# Volume: criar um Volume no serviço com mount path /app/data (guarda state, trades, overrides).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
