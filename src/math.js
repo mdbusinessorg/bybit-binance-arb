@@ -138,6 +138,48 @@ export function evaluateFundingArb({ rateA8h, rateB8h, priceA, priceB, feeA, fee
   };
 }
 
+/**
+ * Avalia uma rota de arbitragem triangular dentro de UMA exchange
+ * (ex.: USDT -> X -> BTC -> USDT). As pernas executam em sequência;
+ * a saída de cada uma alimenta a próxima.
+ *
+ * @param {object} p
+ * @param {number} p.startUsd   quantidade inicial na moeda de partida (USDT)
+ * @param {number} p.feeTaker   taxa taker por perna (fração)
+ * @param {number} p.slippageBuffer margem extra (fração do startUsd)
+ * @param {Array}  p.legs [{ symbol, side, asks?, bids? }]
+ *   side 'buy'  -> gasta quote e recebe base (usa asks)
+ *   side 'sell' -> gasta base e recebe quote (usa bids)
+ * @returns {{ok:boolean, outUsd?:number, net?:number, netPct?:number, legs?:Array, reason?:string}}
+ */
+export function evaluateTriangleRoute({ startUsd, feeTaker, slippageBuffer = 0, legs }) {
+  let amount = startUsd; // unidades da moeda de input da próxima perna (primeira = USDT)
+  const outLegs = [];
+  for (const leg of legs) {
+    if (leg.side === 'buy') {
+      const r = vwapForQuote(leg.asks, amount);
+      if (!r.avgPrice || r.cost < amount * 0.98) {
+        return { ok: false, reason: `liquidez insuficiente em ${leg.symbol} (buy)` };
+      }
+      const received = r.filled * (1 - feeTaker);
+      outLegs.push({ ...leg, spent: r.cost, received, price: r.avgPrice });
+      amount = received;
+    } else {
+      const r = vwapForAmount(leg.bids, amount);
+      if (!r.avgPrice || r.filled < amount * 0.999) {
+        return { ok: false, reason: `liquidez insuficiente em ${leg.symbol} (sell)` };
+      }
+      const received = r.cost * (1 - feeTaker);
+      outLegs.push({ ...leg, spent: r.filled, received, price: r.avgPrice });
+      amount = received;
+    }
+  }
+  const gross = amount - startUsd;
+  const buffer = startUsd * slippageBuffer;
+  const net = gross - buffer;
+  return { ok: true, outUsd: amount, gross, buffer, net, netPct: net / startUsd, legs: outLegs };
+}
+
 export function pct(x, digits = 3) {
   if (x === null || x === undefined || !Number.isFinite(x)) return 'n/a';
   return `${(x * 100).toFixed(digits)}%`;

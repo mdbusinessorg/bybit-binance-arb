@@ -1,14 +1,19 @@
-# Robô de arbitragem Bybit ↔ Binance
+# Robô de arbitragem multi-exchange
 
-Robô autónomo que monitoriza as duas exchanges em tempo real e executa **apenas** quando o lucro
-líquido — depois de taxas, slippage e profundidade real do livro — é positivo. Duas estratégias:
+Robô autónomo que monitoriza exchanges em tempo real e executa **apenas** quando o lucro
+líquido — depois de taxas, slippage e profundidade real do livro — é positivo. Exchanges
+suportadas: **Bybit, Binance, OKX, KuCoin** (2 ou mais, via `EXCHANGES`). Três estratégias:
 
 | Estratégia | Como funciona | Capital necessário |
 |---|---|---|
-| **Spot cross-exchange** | Compra no *ask* da exchange mais barata e vende no *bid* da mais cara, em simultâneo. Sem transferências on-chain. | USDT **e** a moeda em **ambas** as exchanges (pré-financiado) |
-| **Funding-rate (delta-neutro)** | Long no perpétuo com funding mais baixo, short no perpétuo com funding mais alto. Ganha a diferença de funding a cada 8h, sem exposição direcional. | USDT na conta de derivados de ambas |
+| **Spot cross-exchange** | Compra no *ask* da exchange mais barata e vende no *bid* da mais cara, em simultâneo, entre **todos os pares** das exchanges ativas. Sem transferências on-chain. | USDT **e** a moeda nas exchanges (pré-financiado) |
+| **Funding-rate (delta-neutro)** | Long no perpétuo com funding mais baixo, short no com funding mais alto — escolhe a melhor combinação de exchanges por símbolo. Ganha a diferença de funding a cada 8h, sem exposição direcional. | USDT na conta de derivados |
+| **Triangular intra-exchange** | USDT → X → BTC → USDT (e inverso) numa só exchange. Três taxas taker, margens finas — desativada por defeito (`TRI_ARB_ENABLED`). | Só USDT na exchange |
 
-Por defeito arranca em **dry-run** (dados reais, zero ordens). Só coloca ordens reais com `npm run live`.
+Por defeito arranca em **PAPER TRADING** (dados reais, execução simulada com fills parciais,
+slippage conservador e explainability). Ordens reais só com `npm run live`. `RESEARCH_MODE=true`
+mede apenas a qualidade dos sinais. Documentação: [ARCHITECTURE.md](ARCHITECTURE.md) ·
+[STRATEGIES.md](STRATEGIES.md) · [RISK.md](RISK.md) · [BACKTESTING.md](BACKTESTING.md)
 
 ## Instalação
 
@@ -27,12 +32,17 @@ npm run scan -- --watch  # idem, a atualizar continuamente
 npm run scan -- --sim    # dados sintéticos (sem rede)
 
 npm run sim              # robô completo com mercado sintético — para ver a lógica a funcionar
-npm start                # DRY-RUN com dados reais: deteta, "executa" em papel, regista P&L
+npm start                # PAPER TRADING com dados reais: valida, "executa" em simulação, regista P&L
+npm run research         # RESEARCH MODE — só análise de qualidade de sinais, zero execução
 npm run live             # LIVE — ordens reais (exige chaves; espera 5 s antes de começar)
+
+npm run backtest                      # replay dos frames gravados (ou sintéticos)
+npm run backtest -- --stress          # matriz de stress (slippage/latência/liquidez/taxas)
+npm run backtest -- --walkforward     # janelas train/validation/out-of-sample
 
 npm run status           # P&L, trades, posições abertas, circuit breaker
 npm run status -- --resume   # retoma após paragem por circuit breaker / kill switch
-npm test                 # testes unitários da matemática (VWAP, líquido, funding)
+npm test                 # testes unitários (matemática, edge engine, executor, backtest)
 ```
 
 **Kill switch:** cria um ficheiro `STOP` na pasta do projeto e o robô deixa de abrir posições imediatamente.
@@ -96,6 +106,7 @@ real das exchanges antes de aumentar.
 - Permissões: **Spot trading + Derivatives/Futures trading + leitura**. **Nunca** ativar *Withdraw*.
 - Ativar **restrição por IP** com o IP da máquina onde o robô corre.
 - Bybit: usar Unified Trading Account (UTA). Binance: ativar Futures na conta e passar USDT para a carteira de Futures.
+- OKX e KuCoin exigem também a **passphrase** da API (`OKX_API_PASSWORD` / `KUCOIN_API_PASSWORD`).
 - Nunca colocar chaves no código — só em `.env` (ignorado pelo git) ou variáveis de ambiente.
 - `DEMO_TRADING=true` liga às contas demo das duas exchanges para testar execução real sem dinheiro
   (precisa de chaves criadas nas contas demo).
@@ -131,8 +142,8 @@ os primeiros dias: ver quantas oportunidades reais aparecem e qual seria o P&L, 
 
 ### Painel web
 
-- `/` — P&L de hoje/total, trades, posições funding, circuit breaker; auto-refresh 15 s.
-- `/?token=WEB_TOKEN` — o mesmo, com botões **Parar (kill switch)** e **Retomar**.
+- `/` — P&L de hoje/total, **gráfico de P&L acumulado**, trades, posições funding, histórico de oportunidades avaliadas, circuit breaker; auto-refresh 15 s.
+- `/?token=WEB_TOKEN` — o mesmo, com botões **Parar (kill switch)**, **Retomar** e edição de **configuração em runtime** (limiares e tamanhos; persiste em `data/overrides.json`).
 - `/api/status` — JSON; `/health` — para health checks da plataforma.
 
 O ficheiro kill switch e o estado vivem em `DATA_DIR` (`/app/data` no container) — monta um volume persistente
@@ -162,20 +173,23 @@ src/
   index.js            arranque, loops das estratégias, sinais
   scanner.js          tabela de oportunidades (CLI)
   status.js           estado/P&L/posições (CLI)
-  server.js           painel web + /health + /api/status + parar/retomar
-  config.js           todas as opções (.env)
-  exchanges.js        ccxt Bybit/Binance ou mocks; símbolos comuns
-  math.js             VWAP, lucro líquido spot, funding normalizado, APR, break-even
-  executor.js         ordens IOC paralelas, reconciliação de pernas, unwind
+  server.js           painel web + /health + /api/status + parar/retomar + config runtime
+  config.js           todas as opções (.env) + overrides em runtime (data/overrides.json)
+  exchanges.js        ccxt Bybit/Binance/OKX/KuCoin ou mocks; símbolos e pares comuns
+  math.js             VWAP, lucro líquido spot, funding normalizado, APR, break-even, rotas triangulares
+  executor.js         ordens IOC paralelas, reconciliação de pernas, unwind, rotas triangulares
   risk.js             circuit breakers, notional, kill switch
-  state.js            persistência (data/state.json, data/trades.jsonl)
+  state.js            persistência (data/state.json, data/trades.jsonl) + histórico de oportunidades
   notify.js           Telegram
   mock.js             exchange sintética para --sim
   strategies/
     spotArb.js
     fundingArb.js
+    triangularArb.js
 test/
   math.test.js
+  triangle.test.js
+  executor.test.js
 ```
 
 ## Aviso

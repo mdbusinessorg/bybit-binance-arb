@@ -13,7 +13,9 @@
     "live": "node src/index.js --live",
     "sim": "node src/index.js --sim",
     "status": "node src/status.js",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "backtest": "node src/backtest/cli.js",
+    "research": "RESEARCH_MODE=true node src/index.js"
   },
   "keywords": [
     "arbitrage",

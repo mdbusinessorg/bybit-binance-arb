@@ -2,10 +2,10 @@ import { config } from '../config.js';
 import { createLogger } from '../logger.js';
 import { evaluateFundingArb, normalizeFundingTo8h, pct, usd } from '../math.js';
 import { openFundingPosition, closeFundingPosition } from '../executor.js';
-import { state, save, recordTrade } from '../state.js';
+import { state, save, recordTrade, recordOpportunity } from '../state.js';
 import { tradingBlockedReason, canOpenNotional } from '../risk.js';
 import { notify } from '../notify.js';
-import { commonSwapSymbols, EXCHANGE_IDS } from '../exchanges.js';
+import { commonSwapSymbols, EXCHANGE_IDS, unorderedPairs } from '../exchanges.js';
 
 const log = createLogger('funding');
 
@@ -28,9 +28,10 @@ export class FundingArbStrategy {
   constructor(exs) {
     this.exs = exs;
     this.symbols = commonSwapSymbols(exs, config.funding.symbols);
+    this.pairs = unorderedPairs();
     this.exitCounters = {};
     this.lastAccrualAt = {};
-    log.info(`perps comuns Bybit/Binance: ${this.symbols.length}${config.funding.symbols.length ? ` (lista configurada)` : ''}`);
+    log.info(`perps comuns ${EXCHANGE_IDS.join('/')}: ${this.symbols.length}${config.funding.symbols.length ? ` (lista configurada)` : ''}`);
     log.info(
       `limiar: spread funding 8h >= ${pct(config.funding.minSpread8hPct, 4)}, APR líquido >= ${pct(config.funding.minNetAprPct, 1)}, ` +
         `tamanho ${usd(config.funding.positionUsd)} por lado, alavancagem ${config.funding.leverage}x, máx ${config.funding.maxOpenPositions} posições`,
@@ -58,7 +59,7 @@ export class FundingArbStrategy {
         return out;
       }),
     );
-    return { bybit: res[0], binance: res[1] };
+    return Object.fromEntries(EXCHANGE_IDS.map((id, i) => [id, res[i]]));
   }
 
   async fetchVolumes() {
@@ -78,32 +79,35 @@ export class FundingArbStrategy {
 
   async fillPrices(symbol) {
     const res = await Promise.all(EXCHANGE_IDS.map((id) => this.exs[id].fetchOrderBook(symbol, 5)));
-    return {
-      bybit: { bid: res[0].bids[0]?.[0], ask: res[0].asks[0]?.[0] },
-      binance: { bid: res[1].bids[0]?.[0], ask: res[1].asks[0]?.[0] },
-    };
+    return Object.fromEntries(EXCHANGE_IDS.map((id, i) => [id, { bid: res[i].bids[0]?.[0], ask: res[i].asks[0]?.[0] }]));
   }
 
+  /** Avalia um símbolo em todos os pares de exchanges; devolve a melhor combinação. */
   evaluate(symbol, rates) {
-    const a = rates.bybit[symbol];
-    const b = rates.binance[symbol];
-    if (!a || !b || !a.price || !b.price) return null;
-    const ev = evaluateFundingArb({
-      rateA8h: a.rate8h,
-      rateB8h: b.rate8h,
-      priceA: a.price,
-      priceB: b.price,
-      feeA: config.funding.useMakerEntry ? this.exs.bybit.fees_.swapMaker : this.exs.bybit.fees_.swapTaker,
-      feeB: config.funding.useMakerEntry ? this.exs.binance.fees_.swapMaker : this.exs.binance.fees_.swapTaker,
-      expectedHoldHours: config.funding.expectedHoldHours,
-    });
-    return {
-      symbol,
-      ...ev,
-      shortId: ev.shortOn === 'A' ? 'bybit' : 'binance',
-      longId: ev.longOn === 'A' ? 'bybit' : 'binance',
-      rates: { bybit: a, binance: b },
-    };
+    let best = null;
+    for (const [idA, idB] of this.pairs) {
+      const a = rates[idA]?.[symbol];
+      const b = rates[idB]?.[symbol];
+      if (!a || !b || !a.price || !b.price) continue;
+      const ev = evaluateFundingArb({
+        rateA8h: a.rate8h,
+        rateB8h: b.rate8h,
+        priceA: a.price,
+        priceB: b.price,
+        feeA: config.funding.useMakerEntry ? this.exs[idA].fees_.swapMaker : this.exs[idA].fees_.swapTaker,
+        feeB: config.funding.useMakerEntry ? this.exs[idB].fees_.swapMaker : this.exs[idB].fees_.swapTaker,
+        expectedHoldHours: config.funding.expectedHoldHours,
+      });
+      const candidate = {
+        symbol,
+        ...ev,
+        shortId: ev.shortOn === 'A' ? idA : idB,
+        longId: ev.longOn === 'A' ? idA : idB,
+        rates: { [idA]: a, [idB]: b },
+      };
+      if (!best || candidate.netAprPct > best.netAprPct) best = candidate;
+    }
+    return best;
   }
 
   rank(rates, volumes) {
@@ -126,12 +130,18 @@ export class FundingArbStrategy {
 
     const top = ranked.slice(0, 5).map((e) => `${e.symbol.split(':')[0]} ${pct(e.spread8h, 4)}/8h short ${e.shortId} APR líq ${pct(e.netAprPct, 1)}`);
     log.info(`top spreads: ${top.join(' | ')}`);
+    for (const e of ranked.slice(0, 5)) {
+      if (e.spread8h >= config.funding.minSpread8hPct && e.netAprPct >= config.funding.minNetAprPct) {
+        recordOpportunity({ strategy: 'funding', symbol: e.symbol, dir: `long ${e.longId}/short ${e.shortId}`, netPct: e.netAprPct, executed: false });
+      }
+    }
 
     const open = Object.keys(state.fundingPositions).length;
     if (open >= config.funding.maxOpenPositions) return;
 
     for (const ev of ranked) {
-      if (state.fundingPositions[ev.symbol]) continue;
+      const posKey = `${ev.symbol}`;
+      if (state.fundingPositions[posKey]) continue;
       if (ev.spread8h < config.funding.minSpread8hPct) break;
       if (ev.netAprPct < config.funding.minNetAprPct) break;
       if (Math.abs(ev.basisPct) > config.funding.maxBasisPct) continue;
@@ -148,6 +158,10 @@ export class FundingArbStrategy {
       await this.open(ev);
       if (Object.keys(state.fundingPositions).length >= config.funding.maxOpenPositions) break;
     }
+  }
+
+  posKey(symbol) {
+    return symbol;
   }
 
   async open(ev) {
@@ -244,7 +258,7 @@ export class FundingArbStrategy {
           if (liq && mark) {
             const dist = Math.abs(mark - liq) / mark;
             if (dist < 0.15) {
-              const msg = `⚠️ ${pos.symbol}: preço de liquidação a ${pct(dist, 1)} do mark em ${p.info?.exchange || ''} — considerar reforçar margem ou fechar`;
+              const msg = `⚠️ ${pos.symbol}: preço de liquidação a ${pct(dist, 1)} do mark — considerar reforçar margem ou fechar`;
               log.warn(msg);
               notify(msg);
             }
