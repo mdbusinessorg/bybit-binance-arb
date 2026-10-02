@@ -82,7 +82,12 @@ export class TriangularArbStrategy {
     const quotes = {};
     await Promise.all(
       EXCHANGE_IDS.map(async (id) => {
-        if (this.routeSymbols[id].length) quotes[id] = await this.exs[id].fetchBidsAsks(this.routeSymbols[id]);
+        if (this.routeSymbols[id].length) {
+          const ex = this.exs[id];
+          quotes[id] = ex.has.fetchBidsAsks
+            ? await ex.fetchBidsAsks(this.routeSymbols[id])
+            : await ex.fetchTickers(this.routeSymbols[id]);
+        }
       }),
     );
 

@@ -25,7 +25,9 @@ async function scanSpot(exs) {
   const pairs = orderedPairs();
   const quotes = {};
   await Promise.all(EXCHANGE_IDS.map(async (id) => {
-    quotes[id] = await exs[id].fetchBidsAsks(symbols);
+    quotes[id] = exs[id].has.fetchBidsAsks
+      ? await exs[id].fetchBidsAsks(symbols)
+      : await exs[id].fetchTickers(symbols);
   }));
   const rows = [];
   for (const s of symbols) {

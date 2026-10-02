@@ -71,7 +71,10 @@ export class SpotArbStrategy {
       EXCHANGE_IDS.map(async (id) => {
         const t0 = Date.now();
         try {
-          quotes[id] = await this.exs[id].fetchBidsAsks(this.symbols);
+          const ex = this.exs[id];
+          quotes[id] = ex.has.fetchBidsAsks
+            ? await ex.fetchBidsAsks(this.symbols)
+            : await ex.fetchTickers(this.symbols);
           health.recordOk(id, Date.now() - t0);
         } catch (e) {
           health.recordError(id, e);
