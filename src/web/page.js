@@ -342,7 +342,7 @@ async function ctl(kind){try{await fetch("/api/"+kind,{method:"POST",headers:{"c
 async function toggleLive(enable){
   let body="token="+encodeURIComponent(token)+"&enable="+(enable?"1":"0");
   if(enable){
-    const c=prompt("ATIVAR LIVE: o robô vai operar dinheiro REAL na tua conta (pode lucrar OU perder).\n\nEscreve LIVE para confirmar:");
+    const c=prompt("ATIVAR LIVE: o robô vai operar dinheiro REAL na tua conta (pode lucrar OU perder).\\n\\nEscreve LIVE para confirmar:");
     if(c==null)return;
     body+="&confirm="+encodeURIComponent(c);
   }
