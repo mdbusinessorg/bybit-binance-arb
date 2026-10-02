@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const argv = new Set(process.argv.slice(2));
 
@@ -25,6 +27,50 @@ function list(name, def) {
 const LIVE = argv.has('--live') || bool('LIVE', false);
 const SIMULATE = argv.has('--sim') || bool('SIMULATE', false);
 
+// exchanges suportadas e a sua config por defeito (taxas VIP0 públicas)
+const EXCHANGE_DEFS = {
+  bybit: {
+    spotMaker: 0.001, spotTaker: 0.001, swapMaker: 0.0002, swapTaker: 0.00055,
+    needsPassword: false,
+  },
+  binance: {
+    spotMaker: 0.001, spotTaker: 0.001, swapMaker: 0.0002, swapTaker: 0.0005,
+    needsPassword: false,
+  },
+  okx: {
+    spotMaker: 0.0008, spotTaker: 0.001, swapMaker: 0.0002, swapTaker: 0.0005,
+    needsPassword: true, // OKX exige passphrase da API
+  },
+  kucoin: {
+    spotMaker: 0.001, spotTaker: 0.001, swapMaker: 0.0002, swapTaker: 0.0006,
+    needsPassword: true, // KuCoin exige passphrase da API
+  },
+};
+
+function exchangeConfig(id) {
+  const p = id.toUpperCase();
+  const d = EXCHANGE_DEFS[id];
+  return {
+    apiKey: process.env[`${p}_API_KEY`] || '',
+    secret: process.env[`${p}_API_SECRET`] || '',
+    password: process.env[`${p}_API_PASSWORD`] || '',
+    spotMaker: num(`${p}_SPOT_MAKER_FEE`, d.spotMaker),
+    spotTaker: num(`${p}_SPOT_TAKER_FEE`, d.spotTaker),
+    swapMaker: num(`${p}_SWAP_MAKER_FEE`, d.swapMaker),
+    swapTaker: num(`${p}_SWAP_TAKER_FEE`, d.swapTaker),
+    needsPassword: d.needsPassword,
+  };
+}
+
+const EXCHANGES = list('EXCHANGES', ['bybit', 'binance']).filter((id) => {
+  if (!EXCHANGE_DEFS[id]) {
+    console.warn(`exchange desconhecida em EXCHANGES: ${id} (suportadas: ${Object.keys(EXCHANGE_DEFS).join(', ')})`);
+    return false;
+  }
+  return true;
+});
+if (EXCHANGES.length < 2) throw new Error(`EXCHANGES precisa de >= 2 exchanges suportadas (${Object.keys(EXCHANGE_DEFS).join(', ')}); recebeu: ${EXCHANGES}`);
+
 export const config = {
   live: LIVE && !SIMULATE,
   simulate: SIMULATE,
@@ -32,24 +78,12 @@ export const config = {
   logLevel: process.env.LOG_LEVEL || 'info',
   dataDir: process.env.DATA_DIR || './data',
 
-  bybit: {
-    apiKey: process.env.BYBIT_API_KEY || '',
-    secret: process.env.BYBIT_API_SECRET || '',
-    // VIP0 crypto-crypto spot: 0.10% / 0.10% ; USDT perp: 0.02% maker / 0.055% taker
-    spotMaker: num('BYBIT_SPOT_MAKER_FEE', 0.001),
-    spotTaker: num('BYBIT_SPOT_TAKER_FEE', 0.001),
-    swapMaker: num('BYBIT_SWAP_MAKER_FEE', 0.0002),
-    swapTaker: num('BYBIT_SWAP_TAKER_FEE', 0.00055),
-  },
-  binance: {
-    apiKey: process.env.BINANCE_API_KEY || '',
-    secret: process.env.BINANCE_API_SECRET || '',
-    // VIP0 spot: 0.10% (0.075% com desconto BNB) ; USDT-M perp: 0.02% maker / 0.05% taker (0.045% c/ BNB)
-    spotMaker: num('BINANCE_SPOT_MAKER_FEE', 0.001),
-    spotTaker: num('BINANCE_SPOT_TAKER_FEE', 0.001),
-    swapMaker: num('BINANCE_SWAP_MAKER_FEE', 0.0002),
-    swapTaker: num('BINANCE_SWAP_TAKER_FEE', 0.0005),
-  },
+  exchanges: EXCHANGES,
+
+  bybit: exchangeConfig('bybit'),
+  binance: exchangeConfig('binance'),
+  okx: exchangeConfig('okx'),
+  kucoin: exchangeConfig('kucoin'),
 
   spot: {
     enabled: bool('SPOT_ARB_ENABLED', true),
@@ -98,6 +132,51 @@ export const config = {
     maxTradesPerHour: num('MAX_TRADES_PER_HOUR', 30),
   },
 
+  triangular: {
+    enabled: bool('TRI_ARB_ENABLED', false),
+    // base dos triângulos: vazio = todas as bases com mercados X/USDT, X/BTC e BTC/USDT na exchange
+    symbols: list('TRI_SYMBOLS', []),
+    tradeUsd: num('TRI_TRADE_USD', 30),
+    minNetPct: num('TRI_MIN_NET_PCT', 0.12) / 100,
+    minNetUsd: num('TRI_MIN_NET_USD', 0.03),
+    slippageBufferPct: num('TRI_SLIPPAGE_BUFFER_PCT', 0.05) / 100,
+    pollMs: num('TRI_POLL_MS', 3000),
+    cooldownMs: num('TRI_SYMBOL_COOLDOWN_MS', 10_000),
+  },
+
+  // ---------- Laboratório de arbitragem (edge engine / paper trading) ----------
+  lab: {
+    // preset de configuração: conservative | balanced | research
+    preset: (process.env.CONFIG_PRESET || 'balanced').toLowerCase(),
+    // modo research: nunca executa nada (nem paper) — só mede qualidade de sinal
+    researchMode: bool('RESEARCH_MODE', false),
+    // grava snapshots de order book para replay/backtest
+    record: bool('RECORD_MARKET_DATA', false),
+    dataFreshnessMs: num('DATA_FRESHNESS_MS', 3000),
+    degradedDataMs: num('DATA_DEGRADED_MS', 10_000),
+    offlineDataMs: num('DATA_OFFLINE_MS', 30_000),
+    minDataQuality: num('MIN_DATA_QUALITY', 50),
+    opportunityTtlMs: num('OPPORTUNITY_TTL_MS', 4000),
+    baseEdgeBps: num('BASE_EDGE_BPS', 5),
+    executionBufferBps: num('EXECUTION_BUFFER_BPS', 3),
+    safetyBufferPct: num('SAFETY_BUFFER_PCT', 0.02) / 100,
+    minNetUsd: num('LAB_MIN_NET_USD', 0.03),
+    minFillProbability: num('MIN_FILL_PROBABILITY', 0.4),
+    maxVolatilityBps: num('MAX_VOLATILITY_BPS', 120),
+    maxSlippageBps: num('MAX_SLIPPAGE_BPS', 40),
+    maxLatencyMs: num('MAX_LATENCY_MS', 8000),
+    maxDataAgeMs: num('MAX_DATA_AGE_MS', 8000),
+    maxSimultaneousSimulations: num('MAX_SIMULTANEOUS_SIMULATIONS', 4),
+    maxDailySimulatedLossUsd: num('MAX_DAILY_SIMULATED_LOSS_USD', 20),
+    exchangeOfflineMs: num('EXCHANGE_OFFLINE_MS', 60_000),
+    regime: {
+      highVolBps: num('REGIME_HIGH_VOL_BPS', 40),
+      extremeVolBps: num('REGIME_EXTREME_VOL_BPS', 100),
+      dislocatedPct: num('REGIME_DISLOCATED_PCT', 1.5) / 100,
+      lowLiquidityFactor: num('REGIME_LOW_LIQ_FACTOR', 0.25),
+    },
+  },
+
   telegram: {
     token: process.env.TELEGRAM_BOT_TOKEN || '',
     chatId: process.env.TELEGRAM_CHAT_ID || '',
@@ -110,17 +189,110 @@ export const config = {
   },
 };
 
+// ---------- presets do laboratório (só aplicam onde a env não foi definida) ----------
+const PRESETS = {
+  conservative: {
+    baseEdgeBps: 15, minFillProbability: 0.7, minDataQuality: 70,
+    maxSlippageBps: 20, maxLatencyMs: 3000, safetyBufferPct: 0.0005,
+    maxVolatilityBps: 60, minNetUsd: 0.05,
+  },
+  balanced: {},
+  research: {
+    baseEdgeBps: 0, minFillProbability: 0, minDataQuality: 0,
+    maxSlippageBps: 10_000, maxLatencyMs: 60_000, safetyBufferPct: 0,
+    maxVolatilityBps: 100_000, minNetUsd: -Infinity, researchMode: true,
+  },
+};
+const PRESET_ENV = {
+  baseEdgeBps: 'BASE_EDGE_BPS', minFillProbability: 'MIN_FILL_PROBABILITY',
+  minDataQuality: 'MIN_DATA_QUALITY', maxSlippageBps: 'MAX_SLIPPAGE_BPS',
+  maxLatencyMs: 'MAX_LATENCY_MS', safetyBufferPct: 'SAFETY_BUFFER_PCT',
+  maxVolatilityBps: 'MAX_VOLATILITY_BPS', minNetUsd: 'LAB_MIN_NET_USD',
+  researchMode: 'RESEARCH_MODE',
+};
+{
+  const p = PRESETS[config.lab.preset];
+  if (!p) console.warn(`CONFIG_PRESET desconhecido: ${config.lab.preset} (usar conservative|balanced|research)`);
+  else {
+    for (const [k, v] of Object.entries(p)) {
+      const envName = PRESET_ENV[k];
+      if (envName && process.env[envName] !== undefined && process.env[envName] !== '') continue;
+      config.lab[k] = v;
+    }
+  }
+}
+
 export function modeLabel() {
   if (config.simulate) return 'SIMULAÇÃO (dados sintéticos)';
   if (config.live) return config.demo ? 'LIVE (conta DEMO)' : 'LIVE (dinheiro real)';
-  return 'DRY-RUN (dados reais, sem ordens)';
+  if (config.lab.researchMode) return 'RESEARCH (dados reais, análise de sinais — sem trades)';
+  return 'PAPER TRADING (dados reais, execução simulada)';
 }
 
 export function validateForLive() {
   const missing = [];
-  if (!config.bybit.apiKey || !config.bybit.secret) missing.push('BYBIT_API_KEY/BYBIT_API_SECRET');
-  if (!config.binance.apiKey || !config.binance.secret) missing.push('BINANCE_API_KEY/BINANCE_API_SECRET');
+  for (const id of config.exchanges) {
+    const p = id.toUpperCase();
+    const c = config[id];
+    if (!c.apiKey || !c.secret) missing.push(`${p}_API_KEY/${p}_API_SECRET`);
+    if (c.needsPassword && !c.password) missing.push(`${p}_API_PASSWORD`);
+  }
   if (missing.length) {
     throw new Error(`Modo LIVE requer chaves API em falta: ${missing.join(', ')}`);
   }
 }
+
+// ---------- overrides em tempo de execução (editáveis no painel web) ----------
+// Chaves que o painel pode alterar sem reiniciar. Guardadas em DATA_DIR/overrides.json.
+export const OVERRIDABLE = {
+  'spot.minNetPct': () => config.spot.minNetPct,
+  'spot.minNetUsd': () => config.spot.minNetUsd,
+  'spot.tradeUsd': () => config.spot.tradeUsd,
+  'spot.pollMs': () => config.spot.pollMs,
+  'funding.minSpread8hPct': () => config.funding.minSpread8hPct,
+  'funding.minNetAprPct': () => config.funding.minNetAprPct,
+  'funding.positionUsd': () => config.funding.positionUsd,
+  'triangular.minNetPct': () => config.triangular.minNetPct,
+  'triangular.tradeUsd': () => config.triangular.tradeUsd,
+  'lab.baseEdgeBps': () => config.lab.baseEdgeBps,
+  'lab.maxSlippageBps': () => config.lab.maxSlippageBps,
+  'lab.maxLatencyMs': () => config.lab.maxLatencyMs,
+  'lab.minFillProbability': () => config.lab.minFillProbability,
+  'lab.minDataQuality': () => config.lab.minDataQuality,
+  'lab.opportunityTtlMs': () => config.lab.opportunityTtlMs,
+  'lab.safetyBufferPct': () => config.lab.safetyBufferPct,
+  'lab.maxVolatilityBps': () => config.lab.maxVolatilityBps,
+  'lab.minNetUsd': () => config.lab.minNetUsd,
+};
+
+function overridesPath() {
+  return path.join(config.dataDir, 'overrides.json');
+}
+
+export function loadOverrides() {
+  try {
+    const data = JSON.parse(fs.readFileSync(overridesPath(), 'utf8'));
+    applyOverrides(data);
+  } catch {}
+}
+
+export function applyOverrides(data) {
+  for (const [key, value] of Object.entries(data || {})) {
+    if (!(key in OVERRIDABLE) || !Number.isFinite(value)) continue;
+    const [section, field] = key.split('.');
+    config[section][field] = value;
+  }
+}
+
+export function saveOverrides(data) {
+  const clean = {};
+  for (const [key, value] of Object.entries(data || {})) {
+    if (key in OVERRIDABLE && Number.isFinite(value)) clean[key] = value;
+  }
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  fs.writeFileSync(overridesPath(), JSON.stringify(clean, null, 2));
+  applyOverrides(clean);
+  return clean;
+}
+
+loadOverrides();

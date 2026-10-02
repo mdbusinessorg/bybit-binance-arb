@@ -5,7 +5,7 @@
  *   npm run scan -- --sim   -> dados sintéticos
  */
 import { config } from './config.js';
-import { createExchanges, commonSpotSymbols, EXCHANGE_IDS, other } from './exchanges.js';
+import { createExchanges, commonSpotSymbols, EXCHANGE_IDS, orderedPairs } from './exchanges.js';
 import { FundingArbStrategy } from './strategies/fundingArb.js';
 import { evaluateSpotArb, pct, usd } from './math.js';
 
@@ -22,21 +22,24 @@ function table(rows, cols) {
 
 async function scanSpot(exs) {
   const symbols = commonSpotSymbols(exs, config.spot.symbols);
-  const [tb, tn] = await Promise.all([exs.bybit.fetchBidsAsks(symbols), exs.binance.fetchBidsAsks(symbols)]);
-  const q = { bybit: tb, binance: tn };
+  const pairs = orderedPairs();
+  const quotes = {};
+  await Promise.all(EXCHANGE_IDS.map(async (id) => {
+    quotes[id] = await exs[id].fetchBidsAsks(symbols);
+  }));
   const rows = [];
   for (const s of symbols) {
-    for (const buyId of EXCHANGE_IDS) {
-      const sellId = other(buyId);
-      const a = q[buyId][s]?.ask;
-      const b = q[sellId][s]?.bid;
+    for (const [buyId, sellId] of pairs) {
+      const a = quotes[buyId][s]?.ask;
+      const b = quotes[sellId][s]?.bid;
       if (!a || !b) continue;
       rows.push({ s, buyId, sellId, ask: a, bid: b, grossPct: (b - a) / a });
     }
   }
   rows.sort((x, y) => y.grossPct - x.grossPct);
-  const fees = exs.bybit.fees_.spotTaker + exs.binance.fees_.spotTaker;
-  console.log(`\n=== SPOT (topo do livro) — taxas ida+volta ${pct(fees)} | limiar execução ${pct(fees + config.spot.minNetPct + config.spot.slippageBufferPct)} ===`);
+  const feePairs = [...new Set(pairs.map(([a, b]) => `${exs[a].label}+${exs[b].label}: ${pct(exs[a].fees_.spotTaker + exs[b].fees_.spotTaker)}`))];
+  console.log(`\n=== SPOT (topo do livro) — ${EXCHANGE_IDS.length} exchanges, ${pairs.length} direções ===`);
+  console.log(`taxas ida+volta por par: ${feePairs.join(' | ')}`);
   table(rows.slice(0, 15), [
     { h: 'Par', f: (r) => r.s },
     { h: 'Comprar em', f: (r) => exs[r.buyId].label },
@@ -44,7 +47,7 @@ async function scanSpot(exs) {
     { h: 'Vender em', f: (r) => exs[r.sellId].label },
     { h: 'Bid', f: (r) => r.bid.toPrecision(7) },
     { h: 'Spread bruto', f: (r) => pct(r.grossPct, 4) },
-    { h: 'Líquido (após taxas)', f: (r) => pct(r.grossPct - fees, 4) },
+    { h: 'Líquido (após taxas)', f: (r) => pct(r.grossPct - exs[r.buyId].fees_.spotTaker - exs[r.sellId].fees_.spotTaker, 4) },
   ]);
 
   // profundidade real para os 3 melhores
@@ -72,13 +75,12 @@ async function scanFunding(exs) {
   const rates = await strat.fetchRates();
   const volumes = await strat.fetchVolumes();
   const ranked = strat.rank(rates, volumes);
-  console.log(`\n=== FUNDING (perp vs perp) — ${ranked.length} pares comuns | hold esperado ${config.funding.expectedHoldHours}h ===`);
+  console.log(`\n=== FUNDING (perp vs perp) — ${ranked.length} pares avaliados, ${strat.pairs.length} combinações de exchanges | hold esperado ${config.funding.expectedHoldHours}h ===`);
   table(ranked.slice(0, 15), [
     { h: 'Par', f: (r) => r.symbol.split(':')[0] },
-    { h: 'Bybit 8h', f: (r) => pct(r.rates.bybit.rate8h, 4) },
-    { h: 'Binance 8h', f: (r) => pct(r.rates.binance.rate8h, 4) },
+    ...EXCHANGE_IDS.map((id) => ({ h: `${exs[id].label} 8h`, f: (r) => (r.rates[id] ? pct(r.rates[id].rate8h, 4) : '—') })),
     { h: 'Spread 8h', f: (r) => pct(r.spread8h, 4) },
-    { h: 'Short em', f: (r) => exs[r.shortId].label },
+    { h: 'Long/Short', f: (r) => `${r.longId}/${r.shortId}` },
     { h: 'Basis', f: (r) => pct(r.basisPct, 3) },
     { h: 'APR bruto', f: (r) => pct(r.grossAprPct, 1) },
     { h: 'APR líquido', f: (r) => pct(r.netAprPct, 1) },
@@ -90,7 +92,7 @@ async function scanFunding(exs) {
 async function main() {
   const exs = await createExchanges();
   do {
-    console.log(`\n${new Date().toISOString()} — modo ${config.simulate ? 'SIM' : 'REAL (leitura)'}`);
+    console.log(`\n${new Date().toISOString()} — modo ${config.simulate ? 'SIM' : 'REAL (leitura)'} — exchanges: ${EXCHANGE_IDS.join(', ')}`);
     if (config.spot.enabled) await scanSpot(exs);
     if (config.funding.enabled) await scanFunding(exs);
     if (watch) await sleep(10_000);

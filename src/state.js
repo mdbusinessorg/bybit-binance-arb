@@ -22,6 +22,7 @@ const defaults = () => ({
   fundingPositions: {},
   recentTradeTimestamps: [],
   opportunitiesSeen: 0,
+  opportunities: [],
   lastReportAt: 0,
 });
 
@@ -75,6 +76,12 @@ export function recordTrade(trade) {
 export function resetState() {
   state = defaults();
   save();
+}
+
+/** Regista uma oportunidade avaliada (executada ou não) para o painel web. Mantém as últimas 200. */
+export function recordOpportunity(opp) {
+  state.opportunities.push({ ts: new Date().toISOString(), ...opp });
+  if (state.opportunities.length > 200) state.opportunities = state.opportunities.slice(-200);
 }
 
 export function recentTrades(limit = 50) {

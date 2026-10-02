@@ -24,12 +24,14 @@ function precisionFor(price) {
   return { amount: 0, price: 9 };
 }
 
+const LABELS = { bybit: 'Bybit', binance: 'Binance', okx: 'OKX', kucoin: 'KuCoin' };
+
 export function createMockExchange(id, feeCfg) {
-  const label = id === 'bybit' ? 'Bybit' : 'Binance';
+  const label = LABELS[id] || id;
   // enviesamento persistente por exchange para gerar spreads que às vezes excedem as taxas
   const bias = {};
   const funding = {};
-  const balances = { USDT: { free: 1000, used: 0, total: 1000 } };
+  const balances = { USDT: { free: 1000, used: 0, total: 1000 }, BTC: { free: 0.05, used: 0, total: 0.05 } };
   for (const base of Object.keys(BASE_PRICES)) {
     bias[base] = 0;
     funding[base] = rnd(-0.0002, 0.0004);
@@ -46,6 +48,12 @@ export function createMockExchange(id, feeCfg) {
       id: `${base}USDT`, symbol: `${base}/USDT`, base, quote: 'USDT', spot: true, swap: false, active: true,
       precision: p, limits: { amount: { min: 0 }, cost: { min: 5 } },
     };
+    if (base !== 'BTC') {
+      markets[`${base}/BTC`] = {
+        id: `${base}BTC`, symbol: `${base}/BTC`, base, quote: 'BTC', spot: true, swap: false, active: true,
+        precision: p, limits: { amount: { min: 0 }, cost: { min: 5 } },
+      };
+    }
     markets[`${base}/USDT:USDT`] = {
       id: `${base}USDT`, symbol: `${base}/USDT:USDT`, base, quote: 'USDT', settle: 'USDT', spot: false, swap: true,
       linear: true, active: true, contractSize: 1, precision: p, limits: { amount: { min: 0 }, cost: { min: 5 } },
@@ -53,6 +61,9 @@ export function createMockExchange(id, feeCfg) {
   }
 
   function step() {
+    // avança o mercado no máximo uma vez por ciclo de polling (todas as mocks partilham o relógio)
+    if (Date.now() - (shared.lastStepAt || 0) < 200) return;
+    shared.lastStepAt = Date.now();
     shared.tick++;
     for (const base of Object.keys(BASE_PRICES)) {
       shared.mid[base] *= 1 + rnd(-0.0008, 0.0008);
@@ -67,9 +78,14 @@ export function createMockExchange(id, feeCfg) {
     return shared.mid[base] * (1 + bias[base]);
   }
 
+  function midFor(m) {
+    const px = mid(m.base);
+    return m.quote === 'BTC' ? px / mid('BTC') : px;
+  }
+
   function book(symbol, limit = 20) {
     const m = markets[symbol];
-    const px = mid(m.base);
+    const px = midFor(m);
     const halfSpread = px * 0.0002;
     const bids = [];
     const asks = [];
@@ -111,7 +127,7 @@ export function createMockExchange(id, feeCfg) {
       return Number(price).toFixed(markets[symbol].precision.price);
     },
     async fetchBidsAsks(symbols) {
-      if (id === 'bybit') step();
+      step();
       const out = {};
       for (const s of symbols) {
         const b = book(s, 1);
@@ -127,7 +143,7 @@ export function createMockExchange(id, feeCfg) {
       const list = symbols || Object.keys(markets);
       for (const s of list) {
         const m = markets[s];
-        const px = mid(m.base);
+        const px = midFor(m);
         out[s] = { symbol: s, last: px, bid: px * 0.9998, ask: px * 1.0002, quoteVolume: rnd(2e6, 5e8), timestamp: Date.now() };
       }
       return out;
@@ -187,14 +203,15 @@ export function createMockExchange(id, feeCfg) {
       const feeRate = m.swap ? ex.fees_.swapTaker : ex.fees_.spotTaker;
       const fee = cost * feeRate;
       if (m.spot) {
+        const q = balances[m.quote] || (balances[m.quote] = { free: 0, used: 0, total: 0 });
         if (side === 'buy') {
-          balances.USDT.free -= cost + fee;
+          q.free -= cost + fee;
           balances[m.base].free += filled;
         } else {
           balances[m.base].free -= filled;
-          balances.USDT.free += cost - fee;
+          q.free += cost - fee;
         }
-        balances.USDT.total = balances.USDT.free;
+        q.total = q.free;
         balances[m.base].total = balances[m.base].free;
       } else {
         const reduceOnly = params.reduceOnly === true;

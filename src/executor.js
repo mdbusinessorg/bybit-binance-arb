@@ -129,6 +129,122 @@ export async function executeSpotArb({ buyEx, sellEx, symbol, amount, buyLimit, 
 }
 
 /**
+ * Executa uma arbitragem triangular dentro de UMA exchange: pernas sequenciais IOC,
+ * cada uma alimentada com o montante real recebido na anterior. Se uma perna falhar,
+ * converte o ativo em mãos de volta a USDT a mercado (melhor esforço).
+ *
+ * legs: [{ symbol, side, limit, amount }] — 'buy' gasta quote (amount em quote),
+ *       'sell' gasta base (amount em base).
+ *
+ * @returns {Promise<{ok:boolean, pnlUsd:number, detail:object}>}
+ */
+export async function executeTriangularArb({ ex, startUsd, legs, evaluation }) {
+  if (!config.live) {
+    return { ok: true, pnlUsd: evaluation.net, detail: { simulated: true, startUsd, outUsd: evaluation.outUsd, legs: evaluation.legs } };
+  }
+
+  const t0 = Date.now();
+  const executed = [];
+  let holding = { currency: 'USDT', amount: startUsd };
+  let feesUsd = 0;
+  let failedAt = null;
+
+  const unwindToUsdt = async () => {
+    if (holding.currency === 'USDT' || holding.amount <= 0) return;
+    const sym = `${holding.currency}/USDT`;
+    try {
+      const u = await placeMarket(ex, sym, 'sell', holding.amount);
+      const usdt = u.cost || (u.filled || 0) * (u.average || 0);
+      feesUsd += feeOf(u, ex.fees_.spotTaker);
+      executed.push({ unwind: true, symbol: sym, filled: u.filled, usdt });
+      holding = { currency: 'USDT', amount: usdt };
+    } catch (e) {
+      log.error(`unwind ${sym} falhou (${e.message}) — ainda ${holding.amount} ${holding.currency} em ${ex.label}, VERIFICAR MANUALMENTE`);
+      executed.push({ unwind: true, symbol: sym, failed: true });
+    }
+  };
+
+  for (let i = 0; i < legs.length; i++) {
+    const leg = legs[i];
+    const m = ex.market(leg.symbol);
+    const spendCurrency = leg.side === 'buy' ? m.quote : m.base;
+    const receiveCurrency = leg.side === 'buy' ? m.base : m.quote;
+    if (holding.currency !== spendCurrency) {
+      log.error(`perna ${i + 1} ${leg.symbol}: esperava ${spendCurrency} mas tenho ${holding.currency} — abortar`);
+      break;
+    }
+    // createOrder quer sempre montante em BASE: nas compras convertemos a quote
+    // disponível ao preço-limite; nas vendas gastamos a base que temos
+    const amount = leg.side === 'buy' ? holding.amount / leg.limit : Math.min(holding.amount, leg.amount ?? holding.amount);
+    try {
+      const o = await placeIoc(ex, leg.symbol, leg.side, amount, leg.limit);
+      const filled = o.filled || 0;
+      const avg = o.average || leg.limit;
+      feesUsd += feeOf(o, ex.fees_.spotTaker);
+      if (leg.side === 'buy') {
+        const spent = o.cost || filled * avg;
+        const unspent = Math.max(0, holding.amount - spent);
+        if (unspent > holding.amount * 0.05) {
+          // a exchange não cobre 'amount' em quote — o que sobrou fica na moeda de origem
+          executed.push({ unspentQuote: unspent, currency: holding.currency });
+        }
+        executed.push({ symbol: leg.symbol, side: 'buy', filled, avg, spent });
+        holding = { currency: receiveCurrency, amount: filled };
+        if (filled <= 0) {
+          log.warn(`${leg.symbol}: compra sem execução — rota abortada na perna ${i + 1}`);
+          failedAt = i;
+          break;
+        }
+      } else {
+        const usdOut = o.cost || filled * avg;
+        executed.push({ symbol: leg.symbol, side: 'sell', filled, avg, received: usdOut });
+        holding = { currency: receiveCurrency, amount: receiveCurrency === 'USDT' ? usdOut : usdOut };
+        const leftover = amount - filled;
+        if (leftover > amount * 0.05 && i === legs.length - 1) {
+          // última perna parcial: o resto fica no ativo base — converter o que sobrou
+          holding.amount = usdOut;
+          const leftoverUsd = await placeMarket(ex, leg.symbol, 'sell', leftover).catch(() => null);
+          if (leftoverUsd?.cost) holding.amount += leftoverUsd.cost;
+        } else if (leftover > amount * 0.05) {
+          log.warn(`${leg.symbol}: venda parcial (${filled}/${amount}) — ${leftover} ${m.base} ficará para unwind`);
+          // junta o que ficou à posição para o unwind converter a USDT depois
+          holding = { currency: receiveCurrency, amount: usdOut, leftover: { currency: m.base, amount: leftover } };
+        }
+      }
+      if (filled <= 0 && leg.side === 'sell') {
+        log.warn(`${leg.symbol}: venda sem execução na perna ${i + 1}`);
+        failedAt = i;
+        break;
+      }
+    } catch (e) {
+      log.error(`perna ${i + 1} ${leg.symbol} falhou: ${e.message}`);
+      failedAt = i;
+      break;
+    }
+  }
+
+  // converter qualquer ativo intermédio a USDT
+  if (holding.leftover) {
+    const l = holding.leftover;
+    holding = { currency: 'USDT', amount: holding.amount };
+    const usdLeg = await placeMarket(ex, `${l.currency}/USDT`, 'sell', l.amount).catch(() => null);
+    if (usdLeg?.cost) holding.amount += usdLeg.cost;
+  }
+  if (holding.currency !== 'USDT') await unwindToUsdt();
+
+  const endUsd = holding.currency === 'USDT' ? holding.amount : 0;
+  const pnlUsd = endUsd - startUsd;
+  const ok = failedAt === null && executed.length >= legs.length;
+  if (ok) recordSuccess();
+  else recordFailure(new Error(failedAt === null ? 'rota incompleta' : `falhou na perna ${failedAt + 1}`));
+  return {
+    ok,
+    pnlUsd,
+    detail: { startUsd, endUsd, feesUsd, executed, failedAt, latency: Date.now() - t0 },
+  };
+}
+
+/**
  * Tenta entrar como maker (post-only ao melhor preço) e cai para mercado se não executar a tempo.
  */
 async function placeMakerThenMarket(ex, symbol, side, amount, params = {}) {

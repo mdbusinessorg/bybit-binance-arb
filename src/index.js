@@ -3,6 +3,7 @@ import { createLogger } from './logger.js';
 import { createExchanges } from './exchanges.js';
 import { SpotArbStrategy } from './strategies/spotArb.js';
 import { FundingArbStrategy } from './strategies/fundingArb.js';
+import { TriangularArbStrategy } from './strategies/triangularArb.js';
 import { state, save } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 import { notify } from './notify.js';
@@ -14,8 +15,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function banner() {
   log.info('='.repeat(72));
-  log.info(`Robô de arbitragem Bybit <-> Binance | modo: ${modeLabel()}`);
-  log.info(`estratégias: spot=${config.spot.enabled ? 'on' : 'off'} funding=${config.funding.enabled ? 'on' : 'off'}`);
+  log.info(`Robô de arbitragem ${config.exchanges.join(' <-> ')} | modo: ${modeLabel()}`);
+  log.info(`estratégias: spot=${config.spot.enabled ? 'on' : 'off'} funding=${config.funding.enabled ? 'on' : 'off'} triangular=${config.triangular.enabled ? 'on' : 'off'} | lab preset=${config.lab.preset}${config.lab.researchMode ? ' [RESEARCH]' : ''}`);
   log.info(
     `risco: perda diária máx ${usd(config.risk.maxDailyLossUsd)}, notional aberto máx ${usd(config.risk.maxOpenNotionalUsd)}, ` +
       `${config.risk.maxConsecutiveFailures} falhas seguidas param o robô, kill switch: ${config.risk.killSwitchFile}`,
@@ -85,7 +86,12 @@ async function main() {
   if (config.funding.enabled) {
     const funding = new FundingArbStrategy(exs);
     if (funding.symbols.length) tasks.push(loop('funding', () => funding.tick(), config.funding.pollMs));
-    else log.warn('funding: nenhum perp comum às duas exchanges; estratégia desativada');
+    else log.warn('funding: nenhum perp comum às exchanges ativas; estratégia desativada');
+  }
+  if (config.triangular.enabled) {
+    const tri = new TriangularArbStrategy(exs);
+    if (tri.routes.length) tasks.push(loop('tri', () => tri.tick(), config.triangular.pollMs));
+    else log.warn('triangular: nenhuma rota disponível; estratégia desativada');
   }
   if (config.telegram.token) tasks.push(reporter());
   if (!tasks.length) {
