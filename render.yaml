@@ -22,3 +22,14 @@ services:
         generateValue: true
       - key: LIVE
         value: "false"
+      - key: EXCHANGES
+        value: "bybit,binance"
+      # Secrets — o Render pede os valores no dashboard (não ficam no repo).
+      - key: BYBIT_API_KEY
+        sync: false
+      - key: BYBIT_API_SECRET
+        sync: false
+      - key: BINANCE_API_KEY
+        sync: false
+      - key: BINANCE_API_SECRET
+        sync: false
