@@ -34,6 +34,9 @@ nav{display:flex;gap:4px;overflow-x:auto;padding:10px 20px;border-bottom:1px sol
 nav::-webkit-scrollbar{display:none}
 nav a{flex:0 0 auto;padding:7px 13px;border-radius:8px;font-size:13px;color:var(--muted);white-space:nowrap}
 nav a.active{background:var(--panel2);color:var(--text);font-weight:600}
+.actionbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:9px 20px;border-bottom:1px solid var(--border);background:var(--bg)}
+.actionbar .lbl{font-size:12px;color:var(--muted)}
+.btn.sm{padding:6px 12px;font-size:12.5px}
 main{max-width:1120px;margin:0 auto;padding:18px 20px 60px}
 .grid{display:grid;gap:12px}
 .cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
@@ -110,6 +113,7 @@ label{display:block;font-size:11.5px;color:var(--muted);margin:0 0 4px}
   <span id="hdrMeta" class="muted" style="font-size:12px"></span>
 </header>
 <nav id="nav"></nav>
+<div id="actionbar"></div>
 <main id="view"><div class="empty"><div class="t">A carregar…</div></div></main>
 
 <script>
@@ -335,6 +339,29 @@ function vDaytrade(){
 const RENDER={dashboard:vDashboard,daytrade:vDaytrade,transactions:vTransactions,investments:vInvestments,performance:vPerformance,opportunities:vOpportunities,strategies:vStrategies,risk:vRisk,settings:vSettings,advanced:vAdvanced};
 
 async function ctl(kind){try{await fetch("/api/"+kind,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:"token="+encodeURIComponent(token)});setTimeout(load,400)}catch(e){}}
+async function toggleLive(enable){
+  let body="token="+encodeURIComponent(token)+"&enable="+(enable?"1":"0");
+  if(enable){
+    const c=prompt("ATIVAR LIVE: o robô vai operar dinheiro REAL na tua conta (pode lucrar OU perder).\n\nEscreve LIVE para confirmar:");
+    if(c==null)return;
+    body+="&confirm="+encodeURIComponent(c);
+  }
+  try{const r=await fetch("/api/live",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body});
+    if(r.redirected&&r.url.indexOf("live_err")>=0){location.href=r.url;return}
+    setTimeout(load,400)}catch(e){}
+}
+function renderActions(){
+  const el=document.getElementById("actionbar");
+  if(!S||!(token||S.config.auth)){el.style.display="none";return}
+  el.style.display="flex";
+  const blocked=S.blocked||S.lab.safeMode;
+  el.innerHTML='<span class="lbl">Ações:</span>'
+  +(blocked?'<button class="btn sm primary" onclick="ctl(\'resume\')">▶ Retomar</button>':'<button class="btn sm danger" onclick="if(confirm(\'PARAR o robô (kill switch)?\'))ctl(\'stop\')">■ STOP BOT</button>')
+  +(S.live
+    ?'<button class="btn sm" onclick="toggleLive(false)">Voltar a PAPER</button><span class="mode-tag live">LIVE — dinheiro real</span>'
+    :'<button class="btn sm danger" onclick="toggleLive(true)">ATIVAR LIVE</button>')
+  +'<span class="lbl" style="margin-left:auto">'+(S.live?'ordens reais ativas':'modo seguro: execução simulada')+'</span>';
+}
 async function saveCfg(ev){ev.preventDefault();const fd=new FormData(ev.target);fd.set("token",token);const r=await fetch("/api/config",{method:"POST",body:new URLSearchParams(fd)});document.getElementById("cfgmsg").textContent=r.ok?"✓ aplicado":"erro "+r.status;return false}
 
 function render(){
@@ -345,6 +372,7 @@ function render(){
   document.getElementById("hdrMode").innerHTML='<span class="mode-tag'+(/SIMULA/i.test(S.mode)?" sim":(/LIVE/.test(S.mode)&&!/PAPER/.test(S.mode)?" live":""))+'">'+esc(S.mode)+"</span>";
   document.getElementById("hdrMeta").textContent="uptime "+ago(S.startedAt)+" · atualiza 5s";
   if(S.config.auth)document.getElementById("hdrMeta").innerHTML+=' · <a href="/logout" style="color:var(--muted)">sair</a>';
+  renderActions();
   document.getElementById("view").innerHTML=RENDER[route]();
 }
 async function load(){try{const r=await fetch("/api/status");if(!r.ok)throw 0;S=await r.json();render()}catch(e){document.getElementById("view").innerHTML='<div class="empty"><div class="t">Data feed interrupted</div><div class="muted">A retentar ligação ao bot…</div></div>'}}
