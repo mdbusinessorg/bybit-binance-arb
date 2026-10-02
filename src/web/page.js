@@ -274,10 +274,23 @@ function vSettings(){
   +field("daytrade.expiryMinutes","Day-trade: expiração (min)",c.daytrade.expiryMinutes)+field("daytrade.maxOpen","Day-trade: máx abertas",c.daytrade.maxOpen)
   +'</div><p><button class="btn primary" type="submit">Guardar e aplicar</button> <span class="muted" style="font-size:12px">persiste em data/overrides.json</span> <span id="cfgmsg"></span></p></form>'
   :'<p class="muted">Abre o painel com <code>?token=WEB_TOKEN</code> para editar config e controlar o robô.</p>';
+  const liveErr=new URLSearchParams(location.search).get('live_err');
+  const keys=S.keys||{};
+  const keyRows=Object.entries(keys).map(([id,k])=>'<tr><td data-h="Exchange">'+esc(id)+'</td><td data-h="API key">'+(k.apiKey?badge("configurada","ok"):badge("em falta","bad"))+'</td><td data-h="Secret">'+(k.secret?badge("configurada","ok"):badge("em falta","bad"))+'</td><td data-h="Password">'+(k.password?badge("ok","ok"):badge("em falta","bad"))+'</td><td data-h="Pronta">'+(k.ready?badge("READY","ok"):badge("—","mut"))+"</td></tr>").join("");
+  const liveCard='<div class="section"><h2>Trading real (LIVE)</h2><div class="card">'
+  +(liveErr?'<p class="neg" style="margin-top:0">'+esc(liveErr)+"</p>":"")
+  +'<p class="muted" style="margin-top:0">Em <b>LIVE</b> o robô coloca ordens reais nas tuas contas — pode lucrar OU perder dinheiro real. Sem lucros garantidos. Requer API keys com trading (SEM saque).</p>'
+  +'<table class="resp"><thead><tr><th>Exchange</th><th>API key</th><th>Secret</th><th>Password</th><th>Estado</th></tr></thead><tbody>'+keyRows+"</tbody></table>"
+  +(authed?(S.live
+    ?'<form method="post" action="/api/live" style="margin-top:12px"><input type="hidden" name="token" value="'+esc(token)+'"><input type="hidden" name="enable" value="0"><button class="btn" type="submit">Voltar a PAPER</button></form>'
+    :'<form method="post" action="/api/live" style="margin-top:12px" onsubmit="return confirm(\\'Ativar LIVE: o robô vai operar dinheiro real na tua conta. Continuar?\\')"><input type="hidden" name="token" value="'+esc(token)+'"><input type="hidden" name="enable" value="1"><label>Escreve <b>LIVE</b> para confirmar </label><input name="confirm" required style="width:110px"> <button class="btn danger" type="submit">ATIVAR LIVE</button></form>')
+  :'<p class="muted">Login/token necessário para ativar LIVE.</p>')
+  +"</div></div>";
   return '<h2>Bot control</h2><div class="card"><div class="statusbar">'
   +(S.blocked||S.lab.safeMode?dot("bad")+"<b>PAUSED</b>":dot("on")+"<b>RUNNING</b>")
   +'<span class="sstat"><span class="lbl">Modo</span>'+esc(S.mode)+'</span><span class="sstat"><span class="lbl">Risk profile</span>'+esc(S.lab.preset)+'</span><span class="sstat"><span class="lbl">Research</span>'+(S.lab.researchMode?"on":"off")+"</span></div>"
   +(authed?'<div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn" onclick="ctl(\\'resume\\')">▶ Retomar</button><button class="btn danger" onclick="if(confirm(\\'PARAR o robô (kill switch)?\\'))ctl(\\'stop\\')">■ STOP BOT</button></div>':"")+"</div>"
+  +liveCard
   +'<div class="section"><h2>Configuração</h2><div class="card">'+form+"</div></div>";
 }
 

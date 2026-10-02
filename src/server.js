@@ -1,6 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
-import { config, modeLabel, OVERRIDABLE, saveOverrides } from './config.js';
+import { config, modeLabel, OVERRIDABLE, saveOverrides, setLive, keysConfigured } from './config.js';
 import { createLogger } from './logger.js';
 import { state, save, recentTrades } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
@@ -22,6 +22,8 @@ function pnlSeries() {
 function snapshot() {
   return {
     mode: modeLabel(),
+    live: config.live,
+    keys: keysConfigured(),
     exchanges: config.exchanges,
     now: new Date().toISOString(),
     startedAt: state.startedAt,
@@ -192,7 +194,7 @@ export function startWebServer() {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify(snapshot()));
       }
-      if (req.method === 'POST' && (url.pathname === '/api/stop' || url.pathname === '/api/resume' || url.pathname === '/api/config')) {
+      if (req.method === 'POST' && (url.pathname === '/api/stop' || url.pathname === '/api/resume' || url.pathname === '/api/config' || url.pathname === '/api/live')) {
         const body = new URLSearchParams(await readBody(req));
         if (body.get('token')) url.searchParams.set('token', body.get('token'));
         if (!authorized(req, url) && !checkSession(req)) {
@@ -209,6 +211,23 @@ export function startWebServer() {
           state.consecutiveFailures = 0;
           save();
           log.warn('robô retomado via web');
+        } else if (url.pathname === '/api/live') {
+          const enable = body.get('enable') === '1';
+          if (enable && config.simulate) {
+            res.writeHead(303, { location: '/?live_err=LIVE%20indisponível%20em%20SIMULAÇÃO' });
+            return res.end();
+          }
+          if (enable && body.get('confirm') !== 'LIVE') {
+            res.writeHead(303, { location: '/?live_err=confirma%20escrevendo%20LIVE' });
+            return res.end();
+          }
+          try {
+            setLive(enable);
+            log.warn(`modo ${enable ? 'LIVE' : 'PAPER'} ${enable ? 'ATIVADO' : 'restaurado'} via web`);
+          } catch (e) {
+            res.writeHead(303, { location: `/?live_err=${encodeURIComponent(e.message)}` });
+            return res.end();
+          }
         } else {
           // percentagens chegam em % e são guardadas em fração
           const raw = Object.fromEntries(body.entries());

@@ -26,6 +26,34 @@ function list(name, def) {
 
 const LIVE = argv.has('--live') || bool('LIVE', false);
 const SIMULATE = argv.has('--sim') || bool('SIMULATE', false);
+const DATA_DIR = process.env.DATA_DIR || './data';
+
+// LIVE pode ser ligado/desligado em runtime pelo painel (data/live.flag persiste a escolha)
+function liveFlagPath() {
+  return path.join(DATA_DIR, 'live.flag');
+}
+let liveFlag = (LIVE || fs.existsSync(liveFlagPath())) && !SIMULATE;
+
+export function setLive(on) {
+  if (on) validateForLive();
+  config.live = Boolean(on);
+  liveFlag = config.live;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    if (liveFlag) fs.writeFileSync(liveFlagPath(), `${new Date().toISOString()}\n`);
+    else if (fs.existsSync(liveFlagPath())) fs.unlinkSync(liveFlagPath());
+  } catch {}
+  return liveFlag;
+}
+
+export function keysConfigured() {
+  const out = {};
+  for (const id of EXCHANGES) {
+    const c = config[id];
+    out[id] = { apiKey: Boolean(c.apiKey), secret: Boolean(c.secret), password: !c.needsPassword || Boolean(c.password), ready: Boolean(c.apiKey && c.secret && (!c.needsPassword || c.password)) };
+  }
+  return out;
+}
 
 // exchanges suportadas e a sua config por defeito (taxas VIP0 públicas)
 const EXCHANGE_DEFS = {
@@ -72,11 +100,11 @@ const EXCHANGES = list('EXCHANGES', ['bybit', 'binance']).filter((id) => {
 if (EXCHANGES.length < 2) throw new Error(`EXCHANGES precisa de >= 2 exchanges suportadas (${Object.keys(EXCHANGE_DEFS).join(', ')}); recebeu: ${EXCHANGES}`);
 
 export const config = {
-  live: LIVE && !SIMULATE,
+  live: liveFlag,
   simulate: SIMULATE,
   demo: bool('DEMO_TRADING', false),
   logLevel: process.env.LOG_LEVEL || 'info',
-  dataDir: process.env.DATA_DIR || './data',
+  dataDir: DATA_DIR,
 
   exchanges: EXCHANGES,
 
