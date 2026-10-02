@@ -142,8 +142,8 @@ os primeiros dias: ver quantas oportunidades reais aparecem e qual seria o P&L, 
 
 ### Painel web
 
-- `/` — P&L de hoje/total, **gráfico de P&L acumulado**, trades, posições funding, histórico de oportunidades avaliadas, circuit breaker; auto-refresh 15 s.
-- `/?token=WEB_TOKEN` — o mesmo, com botões **Parar (kill switch)**, **Retomar** e edição de **configuração em runtime** (limiares e tamanhos; persiste em `data/overrides.json`).
+- `/` — dashboard estilo fintech com páginas: **Dashboard** (status, P&L, automação, atividade), **Transações**, **Investimento** (alocação por exchange), **Performance** (gráfico cumulativo com períodos 1D–ALL), **Oportunidades** (com WHY por linha), **Estratégias**, **Risco**, **Controlo** e **Advanced / Research** (saúde das exchanges, edge engine, event log); atualiza a cada 5 s via `/api/status`, responsivo em mobile.
+- `/?token=WEB_TOKEN` — desbloqueia o botão **STOP BOT** (kill switch), **Retomar** e a edição de **configuração em runtime** na página Controlo (persiste em `data/overrides.json`).
 - `/api/status` — JSON; `/health` — para health checks da plataforma.
 
 O ficheiro kill switch e o estado vivem em `DATA_DIR` (`/app/data` no container) — monta um volume persistente
