@@ -144,6 +144,24 @@ export const config = {
     cooldownMs: num('TRI_SYMBOL_COOLDOWN_MS', 10_000),
   },
 
+  // ---------- Day trade direcional (operações 5-30 min, estilo payout fixo) ----------
+  daytrade: {
+    enabled: bool('DAYTRADE_ENABLED', true),
+    exchange: process.env.DAYTRADE_EXCHANGE || '', // vazio = primeira de EXCHANGES
+    symbols: list('DAYTRADE_SYMBOLS', ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT', 'AVAX/USDT', 'LINK/USDT', 'SUI/USDT']),
+    stakeUsd: num('DAYTRADE_STAKE_USD', 10),
+    payoutPct: num('DAYTRADE_PAYOUT_PCT', 0.9),
+    expiryMinutes: num('DAYTRADE_EXPIRY_MINUTES', 15),
+    expiryMinMinutes: num('DAYTRADE_EXPIRY_MIN_MINUTES', 5),
+    expiryMaxMinutes: num('DAYTRADE_EXPIRY_MAX_MINUTES', 30),
+    pollMs: num('DAYTRADE_POLL_MS', 15_000),
+    maxOpen: num('DAYTRADE_MAX_OPEN', 3),
+    minScore: num('DAYTRADE_MIN_SCORE', 0.25),
+    minAgreement: num('DAYTRADE_MIN_AGREEMENT', 0.5),
+    cooldownMs: num('DAYTRADE_COOLDOWN_MS', 300_000),
+    dailyLossLimitUsd: num('DAYTRADE_DAILY_LOSS_LIMIT_USD', 30),
+  },
+
   // ---------- Laboratório de arbitragem (edge engine / paper trading) ----------
   lab: {
     // preset de configuração: conservative | balanced | research
@@ -186,6 +204,9 @@ export const config = {
   web: {
     port: num('PORT', 0),
     token: process.env.WEB_TOKEN || '',
+    // login do painel: definir ADMIN_PASSWORD ativa autenticação por sessão
+    adminUser: process.env.ADMIN_USER || 'admin',
+    adminPassword: process.env.ADMIN_PASSWORD || '',
   },
 };
 
@@ -263,6 +284,10 @@ export const OVERRIDABLE = {
   'lab.safetyBufferPct': () => config.lab.safetyBufferPct,
   'lab.maxVolatilityBps': () => config.lab.maxVolatilityBps,
   'lab.minNetUsd': () => config.lab.minNetUsd,
+  'daytrade.stakeUsd': () => config.daytrade.stakeUsd,
+  'daytrade.minScore': () => config.daytrade.minScore,
+  'daytrade.expiryMinutes': () => config.daytrade.expiryMinutes,
+  'daytrade.maxOpen': () => config.daytrade.maxOpen,
 };
 
 function overridesPath() {

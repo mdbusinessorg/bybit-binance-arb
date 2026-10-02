@@ -5,9 +5,10 @@ import { createLogger } from './logger.js';
 import { state, save, recentTrades } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 
-import { edge, paper, health, governor } from './lab.js';
+import { edge, paper, health, governor, daytrade } from './lab.js';
 import { counters, recentEvents } from './events.js';
-import { PAGE } from './web/page.js';
+import { PAGE, LOGIN_PAGE } from './web/page.js';
+import crypto from 'node:crypto';
 
 const log = createLogger('web');
 
@@ -56,11 +57,20 @@ function snapshot() {
       },
       recentEvents: recentEvents(40).reverse(),
     },
+    daytrade: daytrade.instance?.snapshot() || { enabled: false },
     risk: config.risk,
     config: {
       spot: { tradeUsd: config.spot.tradeUsd, minNetPct: config.spot.minNetPct * 100, minNetUsd: config.spot.minNetUsd, pollMs: config.spot.pollMs },
       funding: { positionUsd: config.funding.positionUsd, minSpread8hPct: config.funding.minSpread8hPct * 100, minNetAprPct: config.funding.minNetAprPct * 100 },
       triangular: { enabled: config.triangular.enabled, tradeUsd: config.triangular.tradeUsd, minNetPct: config.triangular.minNetPct * 100 },
+      daytrade: {
+        enabled: config.daytrade.enabled,
+        stakeUsd: config.daytrade.stakeUsd,
+        expiryMinutes: config.daytrade.expiryMinutes,
+        minScore: config.daytrade.minScore,
+        maxOpen: config.daytrade.maxOpen,
+      },
+      auth: authEnabled(),
       lab: {
         baseEdgeBps: config.lab.baseEdgeBps,
         maxSlippageBps: config.lab.maxSlippageBps,
@@ -81,6 +91,36 @@ function authorized(req, url) {
   const header = req.headers.authorization || '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
   return bearer === config.web.token || url.searchParams.get('token') === config.web.token;
+}
+
+// ---------- login por sessão (ativo quando ADMIN_PASSWORD está definida) ----------
+const SESSION_HOURS = 12;
+
+function authEnabled() {
+  return Boolean(config.web.adminPassword);
+}
+
+function makeSession(user) {
+  const exp = Date.now() + SESSION_HOURS * 3600_000;
+  const payload = `${user}:${exp}`;
+  const sig = crypto.createHmac('sha256', config.web.adminPassword).update(payload).digest('hex');
+  return Buffer.from(`${payload}:${sig}`).toString('base64url');
+}
+
+function checkSession(req) {
+  const raw = (req.headers.cookie || '').split(';').map((s) => s.trim()).find((s) => s.startsWith('arb_session='));
+  if (!raw) return false;
+  try {
+    const decoded = Buffer.from(raw.slice(12), 'base64url').toString();
+    const parts = decoded.split(':');
+    const sig = parts.pop();
+    const payload = parts.join(':');
+    const exp = Number(parts.at(-1));
+    const expected = crypto.createHmac('sha256', config.web.adminPassword).update(payload).digest('hex');
+    return sig === expected && Date.now() < exp;
+  } catch {
+    return false;
+  }
 }
 
 async function readBody(req) {
@@ -119,6 +159,35 @@ export function startWebServer() {
           ].join('\n') + '\n',
         );
       }
+      if (url.pathname === '/login' && req.method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(LOGIN_PAGE);
+      }
+      if (url.pathname === '/login' && req.method === 'POST') {
+        const body = new URLSearchParams(await readBody(req));
+        if (body.get('user') === config.web.adminUser && authEnabled() && body.get('pass') === config.web.adminPassword) {
+          res.writeHead(303, {
+            location: '/',
+            'set-cookie': `arb_session=${makeSession(body.get('user'))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_HOURS * 3600}`,
+          });
+        } else {
+          res.writeHead(303, { location: '/login?err=1' });
+        }
+        return res.end();
+      }
+      if (url.pathname === '/logout') {
+        res.writeHead(303, { location: '/login', 'set-cookie': 'arb_session=; HttpOnly; Path=/; Max-Age=0' });
+        return res.end();
+      }
+      if (authEnabled() && !checkSession(req) && (url.pathname === '/' || url.pathname.startsWith('/api/'))) {
+        if (url.pathname === '/') {
+          res.writeHead(303, { location: '/login' });
+        } else {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'login necessário' }));
+        }
+        return res.end();
+      }
       if (url.pathname === '/api/status') {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify(snapshot()));
@@ -126,7 +195,7 @@ export function startWebServer() {
       if (req.method === 'POST' && (url.pathname === '/api/stop' || url.pathname === '/api/resume' || url.pathname === '/api/config')) {
         const body = new URLSearchParams(await readBody(req));
         if (body.get('token')) url.searchParams.set('token', body.get('token'));
-        if (!authorized(req, url)) {
+        if (!authorized(req, url) && !checkSession(req)) {
           res.writeHead(401);
           return res.end('não autorizado');
         }

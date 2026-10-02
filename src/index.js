@@ -9,6 +9,8 @@ import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 import { notify } from './notify.js';
 import { usd } from './math.js';
 import { startWebServer } from './server.js';
+import { DayTradeStrategy } from './daytrade/strategy.js';
+import { daytrade } from './lab.js';
 
 const log = createLogger('main');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -104,6 +106,12 @@ async function main() {
     const tri = new TriangularArbStrategy(exs);
     if (tri.routes.length) tasks.push(loop('tri', () => tri.tick(), config.triangular.pollMs));
     else log.warn('triangular: nenhuma rota disponível; estratégia desativada');
+  }
+  if (config.daytrade.enabled) {
+    const dt = new DayTradeStrategy(exs);
+    daytrade.instance = dt;
+    tasks.push(loop('daytrade', () => dt.tick(), config.daytrade.pollMs));
+    log.info(`day-trade: ${dt.exchangeId} | ${dt.symbols.length} símbolos | stake $${config.daytrade.stakeUsd} payout ${(config.daytrade.payoutPct * 100).toFixed(0)}% | expiração ${config.daytrade.expiryMinutes}m`);
   }
   if (config.telegram.token) tasks.push(reporter());
   if (!tasks.length) {

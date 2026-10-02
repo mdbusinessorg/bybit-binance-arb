@@ -14,3 +14,6 @@ export const health = new ExchangeHealthMonitor(EXCHANGE_IDS);
 export const governor = new RiskGovernor(health);
 export const edge = new EdgeEngine({ slippage, governor, health });
 export const paper = new PaperEngine({ slippage, governor });
+
+/** Instância da estratégia day-trade (definida em index.js quando ativa). */
+export const daytrade = { instance: null };

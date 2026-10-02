@@ -138,6 +138,30 @@ export function createMockExchange(id, feeCfg) {
     async fetchOrderBook(symbol, limit = 20) {
       return book(symbol, limit);
     },
+    async fetchOHLCV(symbol, timeframe = '1m', since, limit = 60) {
+      step();
+      const m = markets[symbol];
+      if (!m) throw new Error(`${label}: mercado desconhecido ${symbol}`);
+      // série coerente: na 1ª chamada gera histórico random-walk; depois anexa uma vela por chamada
+      const key = `${symbol}:${timeframe}`;
+      const hist = (this._ohlcv ||= {})[key] ||= [];
+      const px = midFor(m);
+      if (!hist.length) {
+        let p = px * rnd(0.97, 1.03);
+        const t0 = Date.now() - limit * 60_000;
+        for (let i = 0; i < limit; i++) {
+          const o = p;
+          p *= 1 + rnd(-0.0015, 0.0015);
+          hist.push([t0 + i * 60_000, o, Math.max(o, p) * 1.0003, Math.min(o, p) * 0.9997, p, rnd(50, 500)]);
+        }
+        hist.at(-1)[4] = px;
+      } else {
+        const o = hist.at(-1)[4];
+        hist.push([Date.now(), o, Math.max(o, px) * 1.0003, Math.min(o, px) * 0.9997, px, rnd(50, 500)]);
+        if (hist.length > 300) hist.splice(0, hist.length - 300);
+      }
+      return hist.slice(-limit);
+    },
     async fetchTickers(symbols) {
       const out = {};
       const list = symbols || Object.keys(markets);

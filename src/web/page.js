@@ -113,7 +113,7 @@ label{display:block;font-size:11.5px;color:var(--muted);margin:0 0 4px}
 <main id="view"><div class="empty"><div class="t">A carregar…</div></div></main>
 
 <script>
-const VIEWS=[["dashboard","Dashboard"],["transactions","Transações"],["investments","Investimento"],["performance","Performance"],["opportunities","Oportunidades"],["strategies","Estratégias"],["risk","Risco"],["settings","Controlo"],["advanced","Advanced / Research"]];
+const VIEWS=[["dashboard","Dashboard"],["daytrade","Day Trade"],["transactions","Transações"],["investments","Investimento"],["performance","Performance"],["opportunities","Oportunidades"],["strategies","Estratégias"],["risk","Risco"],["settings","Controlo"],["advanced","Advanced / Research"]];
 let S=null, route=(location.hash||"#dashboard").slice(1);
 if(!VIEWS.some(v=>v[0]===route))route="dashboard";
 const token=new URLSearchParams(location.search).get("token")||"";
@@ -157,7 +157,7 @@ function vDashboard(){
   const w0=new Date(now-7*864e5),m0=new Date(now-30*864e5);
   const[w,l]=winLoss();
   const healthyN=Object.values(h).filter(x=>x.status==="HEALTHY"||x.status==="DEGRADED").length;
-  const stratNames=[S.config.triangular.enabled?"Triangular":null,"Cross-Exchange","Funding"].filter(Boolean);
+  const stratNames=[S.config.triangular.enabled?"Triangular":null,"Cross-Exchange","Funding",(S.daytrade&&S.daytrade.enabled)?"Day Trade":null].filter(Boolean);
   const acts=[
     ...trades().map(t=>({ts:t.ts,sym:t.symbol,txt:(t.buy&&t.sell?t.buy+" → "+t.sell:t.strategy==="tri"?t.ex+" "+(t.dir||""):(t.strategy||"")+" · "+(t.reason||"")),mode:t.mode==="paper"||t.mode==="sim"?"Simulated":t.mode,pnl:t.pnlUsd,ok:t.ok})),
     ...(S.opportunities||[]).filter(o=>o.status==="REJECTED"||o.status==="EXPIRED").slice(0,12).map(o=>({ts:o.ts,sym:o.symbol,txt:(o.dir||o.strategy||""),mode:o.status==="REJECTED"?"Rejected":"Expired",pnl:null,reason:o.reasonCode}))
@@ -260,7 +260,7 @@ function vRisk(){
 
 function vSettings(){
   const c=S.config;
-  const authed=!!token;
+  const authed=!!token||!!S.config.auth;
   const field=(k,l,v)=>'<div><label>'+esc(l)+' <code class="faint">'+esc(k)+'</code></label><input name="'+esc(k)+'" type="number" step="any" value="'+esc(v)+'" style="width:100%"></div>';
   const form=authed?'<form id="cfg" onsubmit="return saveCfg(event)"><div class="fgrid">'
   +field("spot.tradeUsd","Spot: tamanho $",c.spot.tradeUsd)+field("spot.minNetPct","Spot: net mín %",c.spot.minNetPct)+field("spot.minNetUsd","Spot: net mín $",c.spot.minNetUsd)
@@ -270,6 +270,8 @@ function vSettings(){
   +field("lab.maxLatencyMs","Latência máx (ms)",c.lab.maxLatencyMs)+field("lab.minFillProbability","Fill prob mín",c.lab.minFillProbability)
   +field("lab.minDataQuality","Data quality mín",c.lab.minDataQuality)+field("lab.opportunityTtlMs","TTL oportunidade (ms)",c.lab.opportunityTtlMs)
   +field("lab.safetyBufferPct","Safety buffer %",c.lab.safetyBufferPct)+field("lab.maxVolatilityBps","Volatilidade máx (bps)",c.lab.maxVolatilityBps)
+  +field("daytrade.stakeUsd","Day-trade: stake $",c.daytrade.stakeUsd)+field("daytrade.minScore","Day-trade: score mín",c.daytrade.minScore)
+  +field("daytrade.expiryMinutes","Day-trade: expiração (min)",c.daytrade.expiryMinutes)+field("daytrade.maxOpen","Day-trade: máx abertas",c.daytrade.maxOpen)
   +'</div><p><button class="btn primary" type="submit">Guardar e aplicar</button> <span class="muted" style="font-size:12px">persiste em data/overrides.json</span> <span id="cfgmsg"></span></p></form>'
   :'<p class="muted">Abre o painel com <code>?token=WEB_TOKEN</code> para editar config e controlar o robô.</p>';
   return '<h2>Bot control</h2><div class="card"><div class="statusbar">'
@@ -294,7 +296,30 @@ function vAdvanced(){
   +'<div class="section muted" style="font-size:12px"><a href="/api/status">/api/status</a> · <a href="/health">/health</a> · <a href="/metrics">/metrics</a></div>';
 }
 
-const RENDER={dashboard:vDashboard,transactions:vTransactions,investments:vInvestments,performance:vPerformance,opportunities:vOpportunities,strategies:vStrategies,risk:vRisk,settings:vSettings,advanced:vAdvanced};
+function vDaytrade(){
+  const d=S.daytrade||{enabled:false};
+  if(!d.enabled)return '<h2>Day Trade</h2>'+empty("Day trade desativado","Ativa com DAYTRADE_ENABLED=true nas variáveis de ambiente.");
+  const st=d.stats||{},sigs=d.signals||{};
+  const scoreBadge=(x)=>x==null?"—":(x.direction==="CALL"?badge("CALL "+(x.score>=0?"+":"")+x.score,"ok"):x.direction==="PUT"?badge("PUT "+x.score,"bad"):badge("—","mut"));
+  const sigRows=Object.entries(sigs).map(([sym,x])=>'<tr><td data-h="Par">'+esc(sym)+'</td><td data-h="Preço">'+(x.price??"—")+'</td><td data-h="Sinal">'+scoreBadge(x)+'</td><td data-h="Concordância">'+pct(x.agreement,0)+'</td><td data-h="Megabrain" class="muted" style="font-size:12px">'+(x.parts||[]).map(p=>esc(p.book.split(" (")[0])+" "+(p.score>=0?"+":"")+p.score).join(" · ")+"</td></tr>").join("");
+  const openRows=(d.open||[]).map(o=>'<tr><td data-h="Aberta">'+hhmm(o.ts)+'</td><td data-h="Par">'+esc(o.symbol)+'</td><td data-h="Dir">'+(o.direction==="CALL"?badge("CALL","ok"):badge("PUT","bad"))+'</td><td data-h="Stake">'+usdAbs(o.stakeUsd)+'</td><td data-h="Entry">'+o.entry+'</td><td data-h="Expira">'+ago(new Date(Date.parse(o.expiresAt)+0).toISOString())+' ('+o.expiryMinutes+'m)</td><td data-h="Score">'+o.score+"</td></tr>").join("");
+  const closedRows=(d.closed||[]).map(o=>'<tr><td data-h="Fechada">'+dt(o.closedAt||o.expiresAt)+'</td><td data-h="Par">'+esc(o.symbol)+'</td><td data-h="Dir">'+(o.direction==="CALL"?badge("CALL","ok"):badge("PUT","bad"))+'</td><td data-h="Stake">'+usdAbs(o.stakeUsd)+'</td><td data-h="Entry→Exit">'+o.entry+" → "+o.exit+'</td><td data-h="Resultado">'+(o.result==="WIN"?badge("WIN","ok"):badge("LOSS","bad"))+'</td><td data-h="P&L" class="'+pcls(o.pnlUsd)+'">'+usd(o.pnlUsd)+"</td></tr>").join("");
+  return '<h2>Day Trade '+(d.mode==="LIVE"?'<span class="mode-tag live">LIVE</span>':'<span class="mode-tag">PAPER</span>')+'</h2>'
+  +'<p class="muted" style="margin-top:-6px">Operações direcionais de '+d.expiryMinutes+' min em '+esc(d.exchange)+' — megabrain de confluência decide CALL/PUT; vitória paga '+Math.round(d.payoutPct*100)+'% do stake, derrota perde o stake.</p>'
+  +'<div class="grid cards">'
+  +card("PNL day-trade",usd(st.pnlUsd),pcls(st.pnlUsd),(st.wins||0)+"W / "+(st.losses||0)+"L")
+  +card("Win rate",st.winRate==null?"n/a":pct(st.winRate,1))
+  +card("Operações abertas",st.open||0)
+  +card("Fechadas",st.closed||0)
+  +card("Staked total",usdAbs(st.stakedUsd))
+  +card("Perda hoje",usdAbs(st.dailyLossUsd),"neg")
+  +'</div>'
+  +'<div class="section"><h2>Sinais do megabrain</h2>'+(sigRows?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Par</th><th>Preço</th><th>Sinal</th><th>Concordância</th><th>Contribuições</th></tr></thead><tbody>'+sigRows+"</tbody></table></div>":empty("Sem sinais ainda","O megabrain avalia cada símbolo a cada ciclo."))+"</div>"
+  +'<div class="section"><h2>Operações abertas</h2>'+(openRows?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Aberta</th><th>Par</th><th>Direção</th><th>Stake</th><th>Entry</th><th>Expira em</th><th>Score</th></tr></thead><tbody>'+openRows+"</tbody></table></div>":empty("No open operations","Novas operações abrem quando o score e a concordância passam os filtros."))+"</div>"
+  +'<div class="section"><h2>Operações fechadas</h2>'+(closedRows?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Fechada</th><th>Par</th><th>Direção</th><th>Stake</th><th>Entry→Exit</th><th>Resultado</th><th>P&L</th></tr></thead><tbody>'+closedRows+"</tbody></table></div>":empty("No closed operations","As operações resolvem na expiração (5–30 min)."))+"</div>";
+}
+
+const RENDER={dashboard:vDashboard,daytrade:vDaytrade,transactions:vTransactions,investments:vInvestments,performance:vPerformance,opportunities:vOpportunities,strategies:vStrategies,risk:vRisk,settings:vSettings,advanced:vAdvanced};
 
 async function ctl(kind){try{await fetch("/api/"+kind,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:"token="+encodeURIComponent(token)});setTimeout(load,400)}catch(e){}}
 async function saveCfg(ev){ev.preventDefault();const fd=new FormData(ev.target);fd.set("token",token);const r=await fetch("/api/config",{method:"POST",body:new URLSearchParams(fd)});document.getElementById("cfgmsg").textContent=r.ok?"✓ aplicado":"erro "+r.status;return false}
@@ -306,10 +331,39 @@ function render(){
   document.getElementById("hdrStatus").innerHTML='<span class="pill">'+(blocked?dot("bad")+"PAUSED":dot("on")+"RUNNING")+"</span>";
   document.getElementById("hdrMode").innerHTML='<span class="mode-tag'+(/SIMULA/i.test(S.mode)?" sim":(/LIVE/.test(S.mode)&&!/PAPER/.test(S.mode)?" live":""))+'">'+esc(S.mode)+"</span>";
   document.getElementById("hdrMeta").textContent="uptime "+ago(S.startedAt)+" · atualiza 5s";
+  if(S.config.auth)document.getElementById("hdrMeta").innerHTML+=' · <a href="/logout" style="color:var(--muted)">sair</a>';
   document.getElementById("view").innerHTML=RENDER[route]();
 }
 async function load(){try{const r=await fetch("/api/status");if(!r.ok)throw 0;S=await r.json();render()}catch(e){document.getElementById("view").innerHTML='<div class="empty"><div class="t">Data feed interrupted</div><div class="muted">A retentar ligação ao bot…</div></div>'}}
 addEventListener("hashchange",()=>{route=(location.hash||"#dashboard").slice(1);if(!RENDER[route])route="dashboard";render()});
 load();setInterval(load,5000);
 </script>
+</body></html>`;
+
+export const LOGIN_PAGE = `<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login — Arbitrage Bot</title>
+<style>
+body{margin:0;background:#0d0f13;color:#e8eaee;font:14px/1.45 -apple-system,"Segoe UI",system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.box{background:#14171d;border:1px solid #232833;border-radius:12px;padding:30px;width:320px}
+h1{font-size:17px;margin:0 0 4px}p{color:#7d8697;font-size:12.5px;margin:0 0 18px}
+label{display:block;font-size:11.5px;color:#7d8697;margin:0 0 4px}
+input{width:100%;background:#0d0f13;color:#e8eaee;border:1px solid #232833;border-radius:7px;padding:9px 10px;font-size:14px;box-sizing:border-box;margin-bottom:12px}
+button{width:100%;padding:10px;border-radius:8px;border:1px solid #2b528a;background:#1d3a5f;color:#e8eaee;font-size:14px;font-weight:600;cursor:pointer}
+.err{background:rgba(255,107,107,.13);color:#ff6b6b;border-radius:7px;padding:8px 10px;font-size:12.5px;margin-bottom:12px;display:none}
+</style>
+</head>
+<body>
+<form class="box" method="post" action="/login">
+<h1>Arbitrage Bot</h1>
+<p>Login para aceder ao painel</p>
+<div class="err" id="e">Utilizador ou password incorretos.</div>
+<label>Utilizador</label><input name="user" autocomplete="username" required>
+<label>Password</label><input name="pass" type="password" autocomplete="current-password" required>
+<button type="submit">Entrar</button>
+</form>
+<script>if(new URLSearchParams(location.search).get('err'))document.getElementById('e').style.display='block'</script>
 </body></html>`;
