@@ -68,7 +68,19 @@ async function main() {
     log.warn('MODO LIVE: o robô vai colocar ordens reais. Ctrl+C para cancelar nos próximos 5s...');
     await sleep(5000);
   }
-  const exs = await createExchanges();
+  // O painel web já está a ouvir: se as exchanges falharem (ex.: API bloqueada
+  // pela região do servidor), tenta de novo em vez de matar o processo — assim
+  // o healthcheck passa e o erro real fica visível nos logs/painel.
+  let exs;
+  for (;;) {
+    try {
+      exs = await createExchanges();
+      break;
+    } catch (e) {
+      log.error(`init exchanges: ${e.message} — nova tentativa em 30s`);
+      await sleep(30_000);
+    }
+  }
   if (config.live) {
     for (const ex of Object.values(exs)) {
       const bal = await ex.fetchBalance();
