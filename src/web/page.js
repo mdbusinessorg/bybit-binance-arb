@@ -356,7 +356,7 @@ function renderActions(){
   el.style.display="flex";
   const blocked=S.blocked||S.lab.safeMode;
   el.innerHTML='<span class="lbl">Ações:</span>'
-  +(blocked?'<button class="btn sm primary" onclick="ctl(\'resume\')">▶ Retomar</button>':'<button class="btn sm danger" onclick="if(confirm(\'PARAR o robô (kill switch)?\'))ctl(\'stop\')">■ STOP BOT</button>')
+  +(blocked?'<button class="btn sm primary" onclick="ctl(\\'resume\\')">▶ Retomar</button>':'<button class="btn sm danger" onclick="if(confirm(\\'PARAR o robô (kill switch)?\\'))ctl(\\'stop\\')">■ STOP BOT</button>')
   +(S.live
     ?'<button class="btn sm" onclick="toggleLive(false)">Voltar a PAPER</button><span class="mode-tag live">LIVE — dinheiro real</span>'
     :'<button class="btn sm danger" onclick="toggleLive(true)">ATIVAR LIVE</button>')
