@@ -5,7 +5,7 @@ import { createLogger } from './logger.js';
 import { state, save, recentTrades } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 
-import { edge, paper, health, governor, daytrade, spot, approvals } from './lab.js';
+import { edge, paper, health, governor, daytrade, spot, approvals, reconciler } from './lab.js';
 import { counters, recentEvents } from './events.js';
 import { PAGE, LOGIN_PAGE } from './web/page.js';
 import crypto from 'node:crypto';
@@ -48,6 +48,8 @@ function snapshot() {
       daytrade: Boolean(config.daytrade.enabled),
     },
     balances: spot.instance?.balances ? { ...spot.instance.balances, at: spot.instance.balancesAt } : null,
+    reconciliation: reconciler.instance?.result || null,
+    orderbooks: spot.instance?.lastBooks || null,
     pnlSeries: pnlSeries(),
     lab: {
       preset: config.lab.preset,
@@ -148,7 +150,17 @@ export function startWebServer() {
     try {
       if (url.pathname === '/health') {
         res.writeHead(200, { 'content-type': 'application/json' });
-        return res.end(JSON.stringify({ ok: true, blocked: tradingBlockedReason(), mode: modeLabel() }));
+        return res.end(JSON.stringify({
+          ok: true,
+          blocked: tradingBlockedReason(),
+          safeMode: governor.safeMode,
+          mode: modeLabel(),
+          live: config.live,
+          manualApproval: config.lab.manualApproval,
+          exchanges: health.snapshot(),
+          reconciliation: reconciler.instance?.result?.ok ?? null,
+          uptimeSec: Math.round(process.uptime()),
+        }));
       }
       if (url.pathname === '/metrics') {
         const tech = snapshot().lab.tech;

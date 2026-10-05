@@ -7,6 +7,7 @@ import { tradingBlockedReason } from '../risk.js';
 import { notify } from '../notify.js';
 import { commonSpotSymbols, EXCHANGE_IDS, orderedPairs } from '../exchanges.js';
 import { normalizeTicker, normalizeBook } from '../market-data/normalize.js';
+import { calculateDepth } from '../edge/depth.js';
 import { edge, paper, slippage, health, approvals } from '../lab.js';
 import { recordFrame } from '../backtest/recorder.js';
 import { emit } from '../events.js';
@@ -144,6 +145,9 @@ export class SpotArbStrategy {
     }
     health.recordObUpdate(c.buyId);
     health.recordObUpdate(c.sellId);
+    // último par de livros observado (top 8 níveis) — para o order book viz do painel
+    const top = (book, side, n = 8) => (book?.[side] || []).slice(0, n).map(([p, q]) => [Number(p), Number(q)]);
+    this.lastBooks = { symbol: c.symbol, buy: c.buyId, sell: c.sellId, asks: top(obBuy, 'asks'), bids: top(obSell, 'bids'), at: Date.now() };
     if (config.lab.record) recordFrame({ [c.buyId]: { [c.symbol]: obBuy }, [c.sellId]: { [c.symbol]: obSell } });
 
     const buySnap = normalizeBook(c.buyId, c.symbol, obBuy);
@@ -158,6 +162,13 @@ export class SpotArbStrategy {
     const refBid = sellSnap.bid || obSell.bids[0][0];
     tradeUsd = Math.min(tradeUsd, usdtFree * 0.98, baseFree * refBid * 0.98);
     if (!Number.isFinite(tradeUsd)) tradeUsd = config.spot.tradeUsd;
+    // sizing ótimo: nunca acima de ~15% da profundidade visível de cada lado
+    const midBuy = buySnap.bid && buySnap.ask ? (buySnap.bid + buySnap.ask) / 2 : refBid;
+    const midSell = sellSnap.bid && sellSnap.ask ? (sellSnap.bid + sellSnap.ask) / 2 : refBid;
+    const askDepth = calculateDepth(buySnap.orderBook, midBuy).askDepthUsd;
+    const bidDepth = calculateDepth(sellSnap.orderBook, midSell).bidDepthUsd;
+    if (Number.isFinite(askDepth) && askDepth > 0) tradeUsd = Math.min(tradeUsd, askDepth * 0.15);
+    if (Number.isFinite(bidDepth) && bidDepth > 0) tradeUsd = Math.min(tradeUsd, bidDepth * 0.15);
     const minCost = market.limits?.cost?.min || 5;
     if (tradeUsd < Math.max(minCost, 5)) {
       this.cooldownFor(c, 60_000);

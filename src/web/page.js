@@ -320,6 +320,19 @@ function vSettings(){
 
 function vAdvanced(){
   const h=S.lab.exchangeHealth,e=S.lab.edge,t=S.lab.paper,ev=S.lab.recentEvents||[];
+  const ob=S.orderbooks;
+  const maxQ=(rows)=>Math.max(1,...rows.map(r=>r[1]));
+  const obRows=(rows,side)=>{
+    const mx=maxQ(rows);
+    return rows.map(([p,q])=>'<div style="display:flex;justify-content:space-between;font-size:12px;font-variant-numeric:tabular-nums;padding:2px 6px;position:relative">'
+      +'<div style="position:absolute;inset:0;background:'+(side==='ask'?'rgba(255,107,107,.10)':'rgba(53,212,126,.10)')+';width:'+Math.round(q/mx*100)+'%"></div>'
+      +'<span style="position:relative">'+p+'</span><span style="position:relative" class="muted">'+q+'</span></div>').join("");
+  };
+  const obCard=(ob&&ob.asks&&ob.bids)?'<div class="section"><h2>Order book — '+esc(ob.symbol)+' <span class="muted" style="font-weight:400">('+ago(new Date(ob.at).toISOString())+' atrás)</span></h2><div class="split">'
+    +'<div class="card" style="padding:10px"><h2>Asks — '+esc(ob.buy)+' (compra)</h2>'+obRows(ob.asks,'ask')+'</div>'
+    +'<div class="card" style="padding:10px"><h2>Bids — '+esc(ob.sell)+' (venda)</h2>'+obRows(ob.bids,'bid')+'</div></div></div>':'';
+  const rec=S.reconciliation;
+  const recCard=rec?'<div class="section"><h2>Reconciliação</h2><div class="banner '+(rec.ok?'ok':'bad')+'">'+(rec.ok?dot('on'):dot('bad'))+'<div>'+(rec.ok?'Estado interno consistente com as exchanges':'<b>Divergências:</b> '+esc((rec.divergences||[]).join(' | ')))+'<div class="muted" style="font-size:12px;margin-top:2px">verificado '+(rec.checkedAt?ago(rec.checkedAt)+' atrás':'nunca')+(rec.positions&&rec.positions.length?' · '+rec.positions.length+' posições':'')+'</div></div></div></div>':'';
   return '<h2>Advanced / Research</h2><p class="muted" style="margin-top:-6px">Detalhe técnico do motor — dados normalizados, qualidade de sinal, execução simulada e saúde das feeds.</p>'
   +'<div class="section"><h2>Exchange health</h2><div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Exchange</th><th>Estado</th><th>Latência p95</th><th>Erros/min</th><th>Stale/min</th><th>429 (5m)</th><th>OB upd/s</th></tr></thead><tbody>'+Object.entries(h).map(([id,x])=>'<tr><td data-h="Exchange">'+esc(id)+'</td><td data-h="Estado">'+(x.status==="HEALTHY"?badge("HEALTHY","ok"):x.status==="DEGRADED"?badge("DEGRADED","warn"):badge(x.status,"bad"))+'</td><td data-h="p95">'+(x.apiLatencyP95Ms!=null?x.apiLatencyP95Ms+"ms":"—")+'</td><td data-h="Err">'+x.errorsPerMin+'</td><td data-h="Stale">'+x.stalePerMin+'</td><td data-h="429">'+x.rateLimitEvents5m+'</td><td data-h="OB/s">'+x.obUpdatesPerSec+"</td></tr>").join("")+"</tbody></table></div></div>"
   +'<div class="section"><h2>Edge engine & paper</h2><div class="grid cards">'
@@ -329,6 +342,7 @@ function vAdvanced(){
   +'<div class="section"><h2>Sistema</h2><div class="grid cards">'
   +card("Msgs/s",S.lab.tech.messagesPerSec)+card("OB updates/s",S.lab.tech.orderbookUpdatesPerSec)+card("Erros/min",S.lab.tech.errorsPerMin)+card("RAM",S.lab.tech.ramMb+"MB")+card("Uptime",ago(S.startedAt))
   +"</div></div>"
+  +recCard+obCard
   +'<div class="section"><h2>Event log</h2>'+(ev.length?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Payload</th></tr></thead><tbody>'+ev.map(x=>'<tr><td data-h="Time">'+dt(new Date(x.timestamp).toISOString())+'</td><td data-h="Type">'+esc(x.type)+'</td><td data-h="Src">'+esc(x.source)+'</td><td data-h="Payload" class="muted" style="font-size:12px">'+esc(JSON.stringify(x.payload).slice(0,160))+"</td></tr>").join("")+"</tbody></table></div>":empty("Sem eventos",""))+"</div>"
   +'<div class="section muted" style="font-size:12px"><a href="/api/status">/api/status</a> · <a href="/health">/health</a> · <a href="/metrics">/metrics</a></div>';
 }

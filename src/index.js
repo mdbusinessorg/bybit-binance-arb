@@ -10,7 +10,8 @@ import { notify } from './notify.js';
 import { usd } from './math.js';
 import { startWebServer } from './server.js';
 import { DayTradeStrategy } from './daytrade/strategy.js';
-import { daytrade, spot } from './lab.js';
+import { daytrade, spot, reconciler as labReconciler } from './lab.js';
+import { Reconciler } from './reconcile.js';
 
 const log = createLogger('main');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -92,6 +93,9 @@ async function main() {
   notify(`🤖 Robô iniciado — ${modeLabel()}`);
 
   const tasks = [];
+  const reconciler = new Reconciler(exs);
+  tasks.push(loop('reconcile', () => reconciler.tick(), 30_000));
+  labReconciler.instance = reconciler;
   // spot sempre instanciado (balances + execução manual); o tick respeita o toggle runtime
   const spotStrat = new SpotArbStrategy(exs);
   spot.instance = spotStrat;

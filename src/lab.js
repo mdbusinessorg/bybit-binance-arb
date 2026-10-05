@@ -21,6 +21,9 @@ export const daytrade = { instance: null };
 /** Instância da estratégia spot (definida em index.js; usada p/ balances e execução manual). */
 export const spot = { instance: null };
 
+/** Instância do reconciliador (definida em index.js). */
+export const reconciler = { instance: null };
+
 /**
  * Fila de aprovação manual (MANUAL_APPROVAL=true): oportunidades VALIDATED
  * ficam pendentes até o utilizador executar/rejeitar no painel.
