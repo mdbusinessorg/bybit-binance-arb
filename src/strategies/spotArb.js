@@ -65,6 +65,7 @@ export class SpotArbStrategy {
 
   async tick() {
     this.polls++;
+    if (this.polls % 30 === 1) await this.refreshBalances();
     const receivedAt = Date.now();
     const quotes = {};
     const snaps = {};
