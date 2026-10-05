@@ -193,8 +193,16 @@ function vInvestments(){
   const rows=Object.entries(h).map(([id,x])=>{
     const alloc=(S.fundingPositions||[]).filter(p=>p.longId===id||p.shortId===id).reduce((a,p)=>a+(p.notionalUsd||0)/2,0);
     return '<tr><td data-h="Exchange">'+esc(id)+'</td><td data-h="Allocated">'+usdAbs(alloc)+'</td><td data-h="Exposure">'+(alloc>0?usdAbs(alloc):"$0.00")+'</td><td data-h="Latência">'+(x.apiLatencyP95Ms!=null?x.apiLatencyP95Ms+"ms":"—")+'</td><td data-h="Status">'+(x.status==="HEALTHY"?badge("healthy","ok"):x.status==="DEGRADED"?badge("degraded","warn"):badge(x.status.toLowerCase(),"bad"))+"</td></tr>"});
+  const bal=S.balances||{};
+  const balRows=Object.entries(bal).filter(([id])=>id!=="at").map(([id,b])=>{
+    const t=(b&&b.total)||{},f=(b&&b.free)||{},u=(b&&b.used)||{};
+    const usdt={free:f.USDT||0,used:u.USDT||0,total:t.USDT||0};
+    const others=Object.entries(t).filter(([k,v])=>k!=="USDT"&&v>0).sort((a,z)=>z[1]-a[1]).slice(0,4).map(([k,v])=>k+" "+(+v).toPrecision(4)).join(" · ");
+    return '<tr><td data-h="Exchange"><b>'+esc(id)+'</b></td><td data-h="USDT livre">'+usdAbs(usdt.free)+'</td><td data-h="USDT usado">'+usdAbs(usdt.used)+'</td><td data-h="Total USDT">'+usdAbs(usdt.total)+'</td><td data-h="Outros" class="muted" style="font-size:12px">'+(esc(others)||"—")+"</td></tr>";
+  }).join("");
+  const balCard=(Object.keys(bal).length&&Object.keys(bal).some(k=>k!=="at"&&bal[k]))?'<div class="section"><h2>Saldo real nas contas '+badge("LEITURA","ok")+'</h2><div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Exchange</th><th>USDT livre</th><th>USDT em uso</th><th>USDT total</th><th>Outros ativos</th></tr></thead><tbody>'+balRows+"</tbody></table></div></div>":'';
   return '<h2>Investimento — alocação por exchange</h2>'+(rows.length?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Exchange</th><th>Allocated</th><th>Exposure</th><th>Latência p95</th><th>Status</th></tr></thead><tbody>'+rows.join("")+"</tbody></table></div>":empty("No venues","Sem exchanges configuradas."))
-  +'<div class="section"><h2>Posições funding abertas</h2>'+((S.fundingPositions||[]).length?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Par</th><th>Pernas</th><th>Notional</th><th>Aberta há</th><th>Funding acumulado</th></tr></thead><tbody>'+S.fundingPositions.map(p=>'<tr><td data-h="Par">'+esc(p.symbol)+'</td><td data-h="Pernas">long '+esc(p.longId)+" / short "+esc(p.shortId)+'</td><td data-h="Notional">'+usdAbs(p.notionalUsd)+'</td><td data-h="Aberta há">'+ago(p.openedAt?new Date(p.openedAt).toISOString():null)+'</td><td data-h="Funding" class="'+pcls(p.fundingAccruedUsd)+'">'+usd(p.fundingAccruedUsd,3)+"</td></tr>").join("")+"</tbody></table></div>":empty("No open positions","Sem posições delta-neutral abertas."))+"</div>";
+  +balCard+'<div class="section"><h2>Posições funding abertas</h2>'+((S.fundingPositions||[]).length?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Par</th><th>Pernas</th><th>Notional</th><th>Aberta há</th><th>Funding acumulado</th></tr></thead><tbody>'+S.fundingPositions.map(p=>'<tr><td data-h="Par">'+esc(p.symbol)+'</td><td data-h="Pernas">long '+esc(p.longId)+" / short "+esc(p.shortId)+'</td><td data-h="Notional">'+usdAbs(p.notionalUsd)+'</td><td data-h="Aberta há">'+ago(p.openedAt?new Date(p.openedAt).toISOString():null)+'</td><td data-h="Funding" class="'+pcls(p.fundingAccruedUsd)+'">'+usd(p.fundingAccruedUsd,3)+"</td></tr>").join("")+"</tbody></table></div>":empty("No open positions","Sem posições delta-neutral abertas."))+"</div>";
 }
 
 function cumSeries(list){let a=0;return list.filter(t=>typeof t.pnlUsd==="number").map(t=>({ts:t.ts,v:(a+=t.pnlUsd)}))}
@@ -227,6 +235,14 @@ function vPerformance(){
 
 function vOpportunities(){
   const opps=S.opportunities||[];
+  const pend=S.approvals||[];
+  const authed=!!token||!!S.config.auth;
+  const pendRows=pend.map(a=>{
+    const m=a.measurements||{};
+    const left=Math.max(0,Math.round((a.expiresAt-Date.now())/1000));
+    return '<tr><td data-h="Par"><b>'+esc(a.symbol)+'</b></td><td data-h="Rota">'+esc(a.dir)+'</td><td data-h="Net" class="'+pcls(m.netUsd)+'">'+(m.netUsd!=null?usd(m.netUsd,3):"—")+' <span class="muted">('+(m.netBps!=null?m.netBps.toFixed(1)+"bps":"—")+'</span></td><td data-h="Conf.">'+(a.confidence??"—")+'</td><td data-h="Expira">'+left+'s</td><td data-h="Ação">'+(authed?'<button class="btn sm primary" onclick="approveOpp(\\''+a.id+'\\')">EXECUTE</button> <button class="btn sm" onclick="decide(\\'reject\\',\\''+a.id+'\\')">Ignorar</button>':badge("login p/ executar","mut"))+"</td></tr>";
+  }).join("");
+  const pendCard=(pend.length||S.manualApproval)?'<div class="section"><h2>Pendentes de aprovação '+badge(pend.length+"","warn")+'</h2><div class="card" style="padding:0;overflow:auto">'+(pendRows?'<table class="resp"><thead><tr><th>Pair</th><th>Route</th><th>Net estimado</th><th>Conf</th><th>Expira em</th><th>Ação</th></tr></thead><tbody>'+pendRows+"</tbody></table>":empty("Fila vazia","Quando o motor valida uma oportunidade, ela aparece aqui para executares com um clique."))+"</div></div>":"";
   const liq=(o)=>{const d=(o.liquidity&&o.liquidity.depthClass)||o.depthClass;return d?d.replace("ORDERBOOK_",""):"—"};
   const body=opps.map(o=>{
     const st=o.status==="VALIDATED"||o.executed?badge("valid","ok"):o.status==="REJECTED"?badge("rejected","bad"):o.status==="EXPIRED"?badge("expired","mut"):o.status==="FILLED"?badge("filled","ok"):badge((o.status||"detected").toLowerCase(),"warn");
@@ -235,17 +251,20 @@ function vOpportunities(){
     const why=(o.explanation&&o.explanation.finalDecision)?'<tr><td colspan="9" class="muted" style="font-size:12px;padding-left:20px">'+esc(o.explanation.finalDecision)+(o.explanation.liquidityReason?" · "+esc(o.explanation.liquidityReason):"")+(o.explanation.slippageReason?" · "+esc(o.explanation.slippageReason):"")+(o.explanation.riskReason?" · "+esc(o.explanation.riskReason):"")+"</td></tr>":"";
     return '<tr><td data-h="Par">'+esc(o.symbol)+'</td><td data-h="Buy/Sell">'+esc(o.dir||"—")+'</td><td data-h="Gross">'+gross+'</td><td data-h="Net" class="'+pcls(o.netBps)+'">'+net+'</td><td data-h="Liquidez">'+liq(o)+'</td><td data-h="Slippage">'+(o.slippageBps!=null?o.slippageBps.toFixed(0)+"bps":"—")+'</td><td data-h="Latência">'+(o.latencyMs!=null?o.latencyMs+"ms":"—")+'</td><td data-h="Conf.">'+(o.confidence??"—")+'</td><td data-h="Estado">'+st+"</td></tr>"+why;
   }).join("");
-  return '<h2>Oportunidades avaliadas</h2>'+(body?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Pair</th><th>Route</th><th>Gross edge</th><th>Net edge</th><th>Liquidity</th><th>Slippage</th><th>Latency</th><th>Conf</th><th>Status</th></tr></thead><tbody>'+body+"</tbody></table></div>":empty("No valid opportunities yet","O motor avalia cada spread: os aprovados e rejeitados aparecem aqui com o motivo."));
+  return pendCard+'<div class="section"><h2>Oportunidades avaliadas</h2>'+(body?'<div class="card" style="padding:0;overflow:auto"><table class="resp"><thead><tr><th>Pair</th><th>Route</th><th>Gross edge</th><th>Net edge</th><th>Liquidity</th><th>Slippage</th><th>Latency</th><th>Conf</th><th>Status</th></tr></thead><tbody>'+body+"</tbody></table></div>":empty("No valid opportunities yet","O motor avalia cada spread: os aprovados e rejeitados aparecem aqui com o motivo."))+"</div>";
 }
 
 function vStrategies(){
-  const c=S.config,e=S.lab.edge;
-  const st=(name,on,body)=>'<div class="card"><div class="row"><h2 style="margin:0">'+name+'</h2>'+(on?badge("enabled","ok"):badge("off","mut"))+"</div><div style='margin-top:10px' class='muted'>"+body+"</div></div>";
-  return '<h2>Estratégias</h2><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">'
-  +st("Cross-Exchange (spot)",true,"Tamanho $"+c.spot.tradeUsd+" · net mín "+c.spot.minNetPct.toFixed(2)+"% · poll "+c.spot.pollMs+"ms")
-  +st("Funding delta-neutral",true,"$"+c.funding.positionUsd+"/lado · APR líq mín "+c.funding.minNetAprPct+"%")
-  +st("Triangular intra-exchange",c.triangular.enabled,"$"+c.triangular.tradeUsd+" · net mín "+c.triangular.minNetPct.toFixed(2)+"%")
-  +st("Arbitrage Engine",true,"Pipeline: livro → liquidez → slippage → latência → net edge → risk → confidence → paper fill. "+e.detected+" avaliadas · "+e.validated+" validadas.")
+  const c=S.config,e=S.lab.edge,str=S.strategies||{};
+  const authed=!!token||!!S.config.auth;
+  const st=(name,key,on,body)=>'<div class="card"><div class="row"><h2 style="margin:0">'+name+'</h2><span>'+(on?badge("enabled","ok"):badge("off","mut"))+(key&&authed?' <button class="btn sm" onclick="toggleStrat(\\''+key+'\\','+(on?0:1)+')">'+(on?"Desativar":"Ativar")+"</button>":"")+"</span></div><div style='margin-top:10px' class='muted'>"+body+"</div></div>";
+  return '<h2>Estratégias</h2><p class="muted" style="margin-top:-6px">Toggles aplicam em runtime e persistem em overrides.json.</p><div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">'
+  +st("Cross-Exchange (spot)","spot.enabled",str.spot!==false,"Tamanho $"+c.spot.tradeUsd+" · net mín "+c.spot.minNetPct.toFixed(2)+"% · poll "+c.spot.pollMs+"ms")
+  +st("Funding delta-neutral","funding.enabled",str.funding!==false,"$"+c.funding.positionUsd+"/lado · APR líq mín "+c.funding.minNetAprPct+"%")
+  +st("Triangular intra-exchange","triangular.enabled",str.triangular!==false&&c.triangular.enabled,"$"+c.triangular.tradeUsd+" · net mín "+c.triangular.minNetPct.toFixed(2)+"%")
+  +st("Day Trade","daytrade.enabled",str.daytrade!==false,"stake $"+c.daytrade.stakeUsd+" · exp "+c.daytrade.expiryMinutes+"min · score mín "+c.daytrade.minScore)
+  +st("Aprovação manual","lab.manualApproval",!!S.manualApproval,"Quando ativa, cada oportunidade validada espera o teu EXECUTE no separador Oportunidades.")
+  +st("Arbitrage Engine",null,true,"Pipeline: livro → liquidez → slippage → latência → net edge → risk → confidence → paper fill. "+e.detected+" avaliadas · "+e.validated+" validadas.")
   +"</div>";
 }
 
@@ -275,6 +294,7 @@ function vSettings(){
   +field("lab.minDataQuality","Data quality mín",c.lab.minDataQuality)+field("lab.opportunityTtlMs","TTL oportunidade (ms)",c.lab.opportunityTtlMs)
   +field("lab.safetyBufferPct","Safety buffer %",c.lab.safetyBufferPct)+field("lab.maxVolatilityBps","Volatilidade máx (bps)",c.lab.maxVolatilityBps)
   +field("daytrade.stakeUsd","Day-trade: stake $",c.daytrade.stakeUsd)+field("daytrade.minScore","Day-trade: score mín",c.daytrade.minScore)
+  +field("lab.manualApproval","Aprovação manual (1=on)",c.lab.manualApproval)
   +field("daytrade.expiryMinutes","Day-trade: expiração (min)",c.daytrade.expiryMinutes)+field("daytrade.maxOpen","Day-trade: máx abertas",c.daytrade.maxOpen)
   +'</div><p><button class="btn primary" type="submit">Guardar e aplicar</button> <span class="muted" style="font-size:12px">persiste em data/overrides.json</span> <span id="cfgmsg"></span></p></form>'
   :'<p class="muted">Abre o painel com <code>?token=WEB_TOKEN</code> para editar config e controlar o robô.</p>';
@@ -339,6 +359,15 @@ function vDaytrade(){
 const RENDER={dashboard:vDashboard,daytrade:vDaytrade,transactions:vTransactions,investments:vInvestments,performance:vPerformance,opportunities:vOpportunities,strategies:vStrategies,risk:vRisk,settings:vSettings,advanced:vAdvanced};
 
 async function ctl(kind){try{await fetch("/api/"+kind,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:"token="+encodeURIComponent(token)});setTimeout(load,400)}catch(e){}}
+async function decide(kind,id){try{await fetch("/api/"+kind,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:"token="+encodeURIComponent(token)+"&id="+encodeURIComponent(id)});setTimeout(load,300)}catch(e){}}
+async function approveOpp(id){
+  if(S.live&&!confirm("EXECUTAR LIVE: ordens reais na tua conta. Confirmar?"))return;
+  decide("approve",id);
+}
+async function toggleStrat(key,val){
+  try{const fd=new URLSearchParams();fd.set("token",token);fd.set(key,String(val));
+    await fetch("/api/config",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:fd.toString()});setTimeout(load,400)}catch(e){}
+}
 async function toggleLive(enable){
   let body="token="+encodeURIComponent(token)+"&enable="+(enable?"1":"0");
   if(enable){
@@ -360,6 +389,7 @@ function renderActions(){
   +(S.live
     ?'<button class="btn sm" onclick="toggleLive(false)">Voltar a PAPER</button><span class="mode-tag live">LIVE — dinheiro real</span>'
     :'<button class="btn sm danger" onclick="toggleLive(true)">ATIVAR LIVE</button>')
+  +(S.approvals&&S.approvals.length?'<a class="btn sm" href="#opportunities" style="border-color:var(--warn)">'+S.approvals.length+' por aprovar</a>':"")
   +'<span class="lbl" style="margin-left:auto">'+(S.live?'ordens reais ativas':'modo seguro: execução simulada')+'</span>';
 }
 async function saveCfg(ev){ev.preventDefault();const fd=new FormData(ev.target);fd.set("token",token);const r=await fetch("/api/config",{method:"POST",body:new URLSearchParams(fd)});document.getElementById("cfgmsg").textContent=r.ok?"✓ aplicado":"erro "+r.status;return false}

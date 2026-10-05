@@ -10,7 +10,7 @@ import { notify } from './notify.js';
 import { usd } from './math.js';
 import { startWebServer } from './server.js';
 import { DayTradeStrategy } from './daytrade/strategy.js';
-import { daytrade } from './lab.js';
+import { daytrade, spot } from './lab.js';
 
 const log = createLogger('main');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -92,25 +92,25 @@ async function main() {
   notify(`🤖 Robô iniciado — ${modeLabel()}`);
 
   const tasks = [];
-  if (config.spot.enabled) {
-    const spot = new SpotArbStrategy(exs);
-    if (spot.symbols.length) tasks.push(loop('spot', () => spot.tick(), config.spot.pollMs));
-    else log.warn('spot: nenhum símbolo comum às duas exchanges; estratégia desativada');
-  }
+  // spot sempre instanciado (balances + execução manual); o tick respeita o toggle runtime
+  const spotStrat = new SpotArbStrategy(exs);
+  spot.instance = spotStrat;
+  if (spotStrat.symbols.length) tasks.push(loop('spot', () => (config.spot.enabled ? spotStrat.tick() : null), config.spot.pollMs));
+  else log.warn('spot: nenhum símbolo comum às duas exchanges; estratégia desativada');
   if (config.funding.enabled) {
     const funding = new FundingArbStrategy(exs);
-    if (funding.symbols.length) tasks.push(loop('funding', () => funding.tick(), config.funding.pollMs));
+    if (funding.symbols.length) tasks.push(loop('funding', () => (config.funding.enabled ? funding.tick() : null), config.funding.pollMs));
     else log.warn('funding: nenhum perp comum às exchanges ativas; estratégia desativada');
   }
   if (config.triangular.enabled) {
     const tri = new TriangularArbStrategy(exs);
-    if (tri.routes.length) tasks.push(loop('tri', () => tri.tick(), config.triangular.pollMs));
+    if (tri.routes.length) tasks.push(loop('tri', () => (config.triangular.enabled ? tri.tick() : null), config.triangular.pollMs));
     else log.warn('triangular: nenhuma rota disponível; estratégia desativada');
   }
   if (config.daytrade.enabled) {
     const dt = new DayTradeStrategy(exs);
     daytrade.instance = dt;
-    tasks.push(loop('daytrade', () => dt.tick(), config.daytrade.pollMs));
+    tasks.push(loop('daytrade', () => (config.daytrade.enabled ? dt.tick() : null), config.daytrade.pollMs));
     log.info(`day-trade: ${dt.exchangeId} | ${dt.symbols.length} símbolos | stake $${config.daytrade.stakeUsd} payout ${(config.daytrade.payoutPct * 100).toFixed(0)}% | expiração ${config.daytrade.expiryMinutes}m`);
   }
   if (config.telegram.token) tasks.push(reporter());

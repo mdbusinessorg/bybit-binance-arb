@@ -62,7 +62,15 @@ export function save() {
 }
 
 export function recordTrade(trade) {
-  const entry = { ts: new Date().toISOString(), mode: config.simulate ? 'sim' : config.live ? 'live' : 'dry', ...trade };
+  // ID auditável ARB-YYYYMMDD-NNNNNN (sequência persistida em state)
+  const day = today().replaceAll('-', '');
+  state.tradeSeq = (state.tradeSeq || 0) + 1;
+  const entry = {
+    id: `ARB-${day}-${String(state.tradeSeq).padStart(6, '0')}`,
+    ts: new Date().toISOString(),
+    mode: config.simulate ? 'sim' : config.live ? 'live' : 'dry',
+    ...trade,
+  };
   fs.appendFileSync(tradesFile, JSON.stringify(entry) + '\n');
   if (typeof trade.pnlUsd === 'number') {
     state.dailyPnlUsd += trade.pnlUsd;

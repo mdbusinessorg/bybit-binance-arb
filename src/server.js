@@ -5,7 +5,7 @@ import { createLogger } from './logger.js';
 import { state, save, recentTrades } from './state.js';
 import { tradingBlockedReason, openNotionalUsd } from './risk.js';
 
-import { edge, paper, health, governor, daytrade } from './lab.js';
+import { edge, paper, health, governor, daytrade, spot, approvals } from './lab.js';
 import { counters, recentEvents } from './events.js';
 import { PAGE, LOGIN_PAGE } from './web/page.js';
 import crypto from 'node:crypto';
@@ -39,6 +39,15 @@ function snapshot() {
     fundingPositions: Object.values(state.fundingPositions),
     recentTrades: recentTrades(500).reverse(),
     opportunities: [...state.opportunities].reverse().slice(0, 100),
+    approvals: approvals.snapshot(),
+    manualApproval: config.lab.manualApproval,
+    strategies: {
+      spot: Boolean(config.spot.enabled),
+      funding: Boolean(config.funding.enabled),
+      triangular: Boolean(config.triangular.enabled),
+      daytrade: Boolean(config.daytrade.enabled),
+    },
+    balances: spot.instance?.balances ? { ...spot.instance.balances, at: spot.instance.balancesAt } : null,
     pnlSeries: pnlSeries(),
     lab: {
       preset: config.lab.preset,
@@ -80,6 +89,7 @@ function snapshot() {
         minFillProbability: config.lab.minFillProbability,
         minDataQuality: config.lab.minDataQuality,
         opportunityTtlMs: config.lab.opportunityTtlMs,
+        manualApproval: config.lab.manualApproval ? 1 : 0,
         safetyBufferPct: config.lab.safetyBufferPct * 100,
         maxVolatilityBps: config.lab.maxVolatilityBps,
         minNetUsd: config.lab.minNetUsd,
@@ -194,7 +204,7 @@ export function startWebServer() {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify(snapshot()));
       }
-      if (req.method === 'POST' && (url.pathname === '/api/stop' || url.pathname === '/api/resume' || url.pathname === '/api/config' || url.pathname === '/api/live')) {
+      if (req.method === 'POST' && (url.pathname === '/api/stop' || url.pathname === '/api/resume' || url.pathname === '/api/config' || url.pathname === '/api/live' || url.pathname === '/api/approve' || url.pathname === '/api/reject')) {
         const body = new URLSearchParams(await readBody(req));
         if (body.get('token')) url.searchParams.set('token', body.get('token'));
         if (!authorized(req, url) && !checkSession(req)) {
@@ -227,6 +237,31 @@ export function startWebServer() {
           } catch (e) {
             res.writeHead(303, { location: `/?live_err=${encodeURIComponent(e.message)}` });
             return res.end();
+          }
+        } else if (url.pathname === '/api/reject') {
+          const id = body.get('id');
+          const a = approvals.get(id);
+          if (a) {
+            a.opp.status = 'REJECTED';
+            a.opp.explanation.finalDecision = 'REJECTED — ignorado manualmente pelo utilizador';
+            approvals.remove(id);
+            log.warn(`oportunidade ${id} ignorada pelo utilizador`);
+          }
+        } else if (url.pathname === '/api/approve') {
+          const id = body.get('id');
+          const a = approvals.get(id);
+          if (!a) {
+            res.writeHead(303, { location: '/?live_err=' + encodeURIComponent('oportunidade expirada ou já tratada') });
+            return res.end();
+          }
+          approvals.remove(id);
+          a.opp.status = 'EXECUTING';
+          try {
+            await a.execute();
+            log.warn(`oportunidade ${id} executada manualmente (${config.live ? 'LIVE' : 'paper'})`);
+          } catch (e) {
+            a.opp.status = 'FAILED';
+            log.error(`execução manual ${id} falhou: ${e.message}`);
           }
         } else {
           // percentagens chegam em % e são guardadas em fração

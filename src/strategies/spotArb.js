@@ -7,7 +7,7 @@ import { tradingBlockedReason } from '../risk.js';
 import { notify } from '../notify.js';
 import { commonSpotSymbols, EXCHANGE_IDS, orderedPairs } from '../exchanges.js';
 import { normalizeTicker, normalizeBook } from '../market-data/normalize.js';
-import { edge, paper, slippage, health } from '../lab.js';
+import { edge, paper, slippage, health, approvals } from '../lab.js';
 import { recordFrame } from '../backtest/recorder.js';
 import { emit } from '../events.js';
 
@@ -41,7 +41,8 @@ export class SpotArbStrategy {
   }
 
   async refreshBalances(force = false) {
-    if (!config.live && !config.simulate) return;
+    const hasKeys = EXCHANGE_IDS.some((id) => config[id]?.apiKey);
+    if (!config.live && !config.simulate && !hasKeys) return;
     if (!force && Date.now() - this.balancesAt < 60_000) return;
     const res = await Promise.allSettled(EXCHANGE_IDS.map((id) => this.exs[id].fetchBalance({ type: 'spot' })));
     EXCHANGE_IDS.forEach((id, i) => {
@@ -215,6 +216,20 @@ export class SpotArbStrategy {
       return;
     }
 
+    // MANUAL APPROVAL: fica na fila até o utilizador clicar EXECUTE/IGNORAR no painel
+    if (config.lab.manualApproval) {
+      opp.status = 'PENDING_APPROVAL';
+      approvals.add(opp, () => this.executeOpp(opp, c, buyEx, sellEx, m, tradeUsd));
+      emit('approval_pending', 'spot', { id: opp.id, symbol: c.symbol, netUsd: m.netUsd, confidence: opp.confidence });
+      log.info(`PENDENTE APROVAÇÃO: ${line}`);
+      return;
+    }
+
+    return this.executeOpp(opp, c, buyEx, sellEx, m, tradeUsd);
+  }
+
+  /** Executa uma oportunidade validada — caminho LIVE ou PAPER (aprovada ou automática). */
+  async executeOpp(opp, c, buyEx, sellEx, m, tradeUsd) {
     if (config.live) {
       const blocked = tradingBlockedReason();
       if (blocked) {
